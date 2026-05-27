@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability
+    url: https://www.nvidia.com/object/submit-security-vulnerability.html
+    about: Please report security vulnerabilities here, not on GitHub.
+  - name: NVIDIA Developer Forums
+    url: https://forums.developer.nvidia.com/
+    about: General questions and discussions about NVIDIA software.
+  - name: Oracle Cloud Infrastructure Documentation
+    url: https://docs.oracle.com/en-us/iaas/Content/home.htm
+    about: Questions about OCI services themselves are best asked through Oracle's channels.
