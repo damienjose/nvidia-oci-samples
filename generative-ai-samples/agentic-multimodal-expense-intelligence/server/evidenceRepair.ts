@@ -61,8 +61,13 @@ type Candidate<T> = { value: T; rawValue: string; evidence: string; score: numbe
 
 function fill(result: StructuredReceipt, repaired: Set<string>, field: keyof ReceiptFields, value: string | number, confidence: number, evidence: string, summary: string, rawValue?: string, force = false): void {
   if (!force && !missing(result.fields[field])) return;
+  if (force) {
+    delete result.confidence[field];
+    result.provenance = result.provenance.filter((item) => item.field !== field);
+    result.reasoning = result.reasoning.filter((item) => item.field !== field);
+  }
   result.fields[field] = value as never;
-  result.confidence[field] = Math.max(result.confidence[field] ?? 0, confidence);
+  result.confidence[field] = force ? confidence : Math.max(result.confidence[field] ?? 0, confidence);
   result.provenance.push({ field, source: "schema-guard", evidence });
   result.reasoning.push({ field, summary, evidence: [evidence], rawValue: rawValue ?? evidence, normalizedValue: String(value), confidence });
   repaired.add(field);

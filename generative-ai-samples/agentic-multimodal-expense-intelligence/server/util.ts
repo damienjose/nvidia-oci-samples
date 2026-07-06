@@ -40,7 +40,14 @@ export function mimeFromPath(path: string): string {
 
 export async function readRequestJson<T>(request: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
-  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  const maxBytes = 25 * 1024 * 1024;
+  let totalBytes = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > maxBytes) throw new Error("Request body too large");
+    chunks.push(buffer);
+  }
   const text = Buffer.concat(chunks).toString("utf8");
   return (text ? JSON.parse(text) : {}) as T;
 }

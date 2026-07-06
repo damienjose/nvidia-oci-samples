@@ -25,10 +25,13 @@ export class DataStore {
   async readState(): Promise<AppState> {
     try {
       return JSON.parse(await readFile(this.stateFile, "utf8")) as AppState;
-    } catch {
-      const empty: AppState = { trips: [], expenses: [], auditEvents: [] };
-      await this.writeState(empty);
-      return empty;
+    } catch (error) {
+      if (isNotFound(error)) {
+        const empty: AppState = { trips: [], expenses: [], auditEvents: [] };
+        await this.writeState(empty);
+        return empty;
+      }
+      throw error;
     }
   }
 
@@ -86,4 +89,8 @@ export class DataStore {
     const state = await this.readState();
     return state.expenses.filter((expense) => expense.tripId === tripId).reverse();
   }
+}
+
+function isNotFound(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT";
 }

@@ -148,3 +148,22 @@ Balance Due $0.00`;
   assert.equal(structured.fields.amount, 98.55);
   assert.equal(structured.fields.paymentMethod, "Visa");
 });
+
+test("forced repairs replace stale confidence and reasoning for overridden fields", () => {
+  const structured = {
+    fields: { amount: 0.9 },
+    confidence: { amount: 0.99 },
+    provenance: [{ field: "amount", source: "nemotron-omni" as const, evidence: "TOTAL TAX $0.90" }],
+    reasoning: [{ field: "amount", summary: "Amount was tax.", evidence: ["TOTAL TAX $0.90"], rawValue: "$0.90", normalizedValue: "0.9", confidence: 0.99 }],
+  };
+  const evidence = `DOWNTOWN SNACKS
+DATE: 05/13/2026
+TOTAL TAX $0.90
+AMOUNT: $9.60
+PAID VISA CREDIT`;
+  const { structured: repaired } = repairReceiptFromEvidence(structured, evidence, "snacks.png");
+  assert.equal(repaired.fields.amount, 9.60);
+  assert.equal(repaired.confidence.amount, 0.9);
+  assert.equal(repaired.reasoning.filter((item) => item.field === "amount").length, 1);
+  assert.equal(repaired.provenance.filter((item) => item.field === "amount").length, 1);
+});

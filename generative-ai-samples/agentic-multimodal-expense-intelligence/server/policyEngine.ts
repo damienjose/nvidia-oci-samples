@@ -24,8 +24,14 @@ export function evaluatePolicy(expense: Pick<ExpenseRecord, "savedFields">, trip
   if (policy.cash.warnIfCashPayment && String(fields.paymentMethod || "").toLowerCase() === "cash") checks.push({ id: "cash-payment", decision: "warn", reason: "Cash reimbursement may require extra review.", evidence: { paymentMethod: fields.paymentMethod } });
   if (amount !== null) checks.push({ id: "high-amount", decision: amount >= policy.highAmount.blockThreshold ? "block" : amount >= policy.highAmount.warnThreshold ? "warn" : "pass", reason: amount >= policy.highAmount.blockThreshold ? "Amount exceeds hard-stop threshold." : amount >= policy.highAmount.warnThreshold ? "Amount exceeds review threshold." : "Amount is below high-value thresholds.", evidence: { amount, warnThreshold: policy.highAmount.warnThreshold, blockThreshold: policy.highAmount.blockThreshold } });
   if (fields.transactionDate) {
-    const ageDays = Math.floor((now.getTime() - new Date(`${fields.transactionDate}T00:00:00Z`).getTime()) / 86_400_000);
-    checks.push({ id: "expense-age", decision: ageDays > policy.age.warnIfOlderThanDays ? "warn" : "pass", reason: ageDays > policy.age.warnIfOlderThanDays ? "Expense is older than ABC Company submission guidance." : "Expense date is within submission guidance.", evidence: { ageDays, warnIfOlderThanDays: policy.age.warnIfOlderThanDays } });
+    const parsedDate = new Date(`${fields.transactionDate}T00:00:00Z`);
+    const validDate = /^\d{4}-\d{2}-\d{2}$/.test(fields.transactionDate) && Number.isFinite(parsedDate.getTime());
+    if (!validDate) {
+      checks.push({ id: "expense-age", decision: "warn", reason: "Transaction date could not be parsed.", evidence: { transactionDate: fields.transactionDate } });
+    } else {
+      const ageDays = Math.floor((now.getTime() - parsedDate.getTime()) / 86_400_000);
+      checks.push({ id: "expense-age", decision: ageDays > policy.age.warnIfOlderThanDays ? "warn" : "pass", reason: ageDays > policy.age.warnIfOlderThanDays ? "Expense is older than ABC Company submission guidance." : "Expense date is within submission guidance.", evidence: { ageDays, warnIfOlderThanDays: policy.age.warnIfOlderThanDays } });
+    }
   }
   return checks;
 }

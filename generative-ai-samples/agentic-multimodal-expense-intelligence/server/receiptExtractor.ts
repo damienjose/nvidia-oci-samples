@@ -136,30 +136,41 @@ async function extractWithNemotron(input: ExtractionInput, options: ExtractorOpt
 async function parseEvidence(input: ExtractionInput, options: ExtractorOptions, audit: AuditLogger, pass: string, mode: string): Promise<{ evidence: string; latencyMs: number }> {
   const client = new NemotronChatClient({ baseUrl: options.parseBaseUrl, model: options.parseModel, apiKey: options.parseApiKey! });
   const started = performance.now();
-  const response = await client.complete({
-    tools: [{ type: "function", function: { name: mode } }],
-    messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: dataUrlFromBase64(input.mimeType, input.contentBase64) } }] }],
-    temperature: 0,
-  });
-  const latencyMs = Math.round(performance.now() - started);
-  const evidence = flattenParseEvidence(response.content);
-  await audit.write({ type: "model.call", actor: "expense-intelligence-agent", action: "nemotron.parse", tripId: input.tripId, expenseId: input.expenseId, details: { pass, mode, model: options.parseModel, latencyMs, evidenceChars: evidence.length } });
-  return { evidence, latencyMs };
+  try {
+    const response = await client.complete({
+      tools: [{ type: "function", function: { name: mode } }],
+      messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: dataUrlFromBase64(input.mimeType, input.contentBase64) } }] }],
+      temperature: 0,
+    });
+    const latencyMs = Math.round(performance.now() - started);
+    const evidence = flattenParseEvidence(response.content);
+    await audit.write({ type: "model.call", actor: "expense-intelligence-agent", action: "nemotron.parse", tripId: input.tripId, expenseId: input.expenseId, details: { pass, mode, model: options.parseModel, latencyMs, evidenceChars: evidence.length } });
+    return { evidence, latencyMs };
+  } catch (error) {
+    await audit.write({ type: "model.call", severity: "error", actor: "expense-intelligence-agent", action: "nemotron.parse.failed", tripId: input.tripId, expenseId: input.expenseId, details: { pass, mode, model: options.parseModel, latencyMs: Math.round(performance.now() - started), error: errorMessage(error) } });
+    throw error;
+  }
 }
 
 async function structureWithOmni(input: ExtractionInput, evidence: string, options: ExtractorOptions, audit: AuditLogger, pass: string) {
   const client = new NemotronChatClient({ baseUrl: options.omniBaseUrl, model: options.omniModel, apiKey: options.omniApiKey! });
   const started = performance.now();
-  const response = await client.complete({
-    messages: [
-      { role: "system", content: "Convert parsed receipt evidence into strict expense receipt JSON. Return only JSON. Do not include chain-of-thought. Include concise display-safe rationale summaries for fields." },
-      { role: "user", content: buildOmniPrompt(input.fileName, evidence) },
-    ],
-    temperature: 0.1,
-    max_tokens: 1600,
-  });
-  await audit.write({ type: "model.call", actor: "expense-intelligence-agent", action: "nemotron.omni", tripId: input.tripId, expenseId: input.expenseId, details: { pass, model: options.omniModel, latencyMs: Math.round(performance.now() - started) } });
-  return mapOmniReceiptJson(response.content, input.receiptFileRef);
+  try {
+    const response = await client.complete({
+      messages: [
+        { role: "system", content: "Convert parsed receipt evidence into strict expense receipt JSON. Return only JSON. Do not include chain-of-thought. Include concise display-safe rationale summaries for fields." },
+        { role: "user", content: buildOmniPrompt(input.fileName, evidence) },
+      ],
+      temperature: 0.1,
+      max_tokens: 1600,
+    });
+    const mapped = mapOmniReceiptJson(response.content, input.receiptFileRef);
+    await audit.write({ type: "model.call", actor: "expense-intelligence-agent", action: "nemotron.omni", tripId: input.tripId, expenseId: input.expenseId, details: { pass, model: options.omniModel, latencyMs: Math.round(performance.now() - started) } });
+    return mapped;
+  } catch (error) {
+    await audit.write({ type: "model.call", severity: "error", actor: "expense-intelligence-agent", action: "nemotron.omni.failed", tripId: input.tripId, expenseId: input.expenseId, details: { pass, model: options.omniModel, latencyMs: Math.round(performance.now() - started), error: errorMessage(error) } });
+    throw error;
+  }
 }
 
 async function fixtureEvidence(rootDir: string, fileName: string): Promise<string> {
@@ -190,6 +201,10 @@ function mergeEvidence(primary: string, retry: string): string {
     seen.add(normalized);
     return true;
   }).join("\n");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function buildOmniPrompt(fileName: string, evidence: string): string {

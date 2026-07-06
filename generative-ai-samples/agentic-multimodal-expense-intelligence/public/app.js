@@ -310,7 +310,7 @@ async function saveFields(expenseId) {
 }
 
 async function approveTrip(tripId) {
-  await api(`/api/trips/${tripId}/approve`, { method: "POST", body: { approvedBy: $("employeeName").value || "ABC Employee Name" } });
+  await api(`/api/trips/${tripId}/approve`, { method: "POST", body: { approvedBy: "ABC Expense Reviewer" } });
   await refresh();
 }
 
@@ -335,11 +335,20 @@ window.approveTrip = approveTrip;
 window.downloadCsv = downloadCsv;
 
 async function api(path, options = {}) {
-  const response = await fetch(path, { method: options.method || "GET", headers: { "content-type": "application/json" }, body: options.body ? JSON.stringify(options.body) : undefined });
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
-  if (!response.ok || payload.error) throw new Error(payload.error || response.statusText);
-  return payload;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 240000);
+  try {
+    const response = await fetch(path, { method: options.method || "GET", headers: { "content-type": "application/json" }, body: options.body ? JSON.stringify(options.body) : undefined, signal: controller.signal });
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!response.ok || payload.error) throw new Error(payload.error || response.statusText);
+    return payload;
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("Request timed out while waiting for receipt processing.");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function fileToBase64(file) {

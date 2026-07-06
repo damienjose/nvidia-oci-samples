@@ -76,3 +76,55 @@ NOTE: FINAL PAYABLE AMOUNT IS COVERED BY STAMP AND CANNOT BE READ`,
   assert.equal(expense?.savedFields.amount, null);
   assert(expense?.policyChecks.some((check) => check.id === "required-amount" && check.decision === "block"));
 });
+
+test("does not mark an empty trip ready for approval", async () => {
+  const root = await mkdtemp(join(tmpdir(), "expense-empty-trip-"));
+  const store = new DataStore(root);
+  await store.ensure();
+  const audit = new AuditLogger(store);
+  const controls = new RuntimeControls({ toolAllowlist: ["trip.create", "human.approve"] }, audit);
+  const workflow = new TripWorkflow({ store, audit, controls, policy, extractorOptions: { rootDir: root, mode: "local", parseBaseUrl: "https://integrate.api.nvidia.com", parseModel: "parse", omniBaseUrl: "https://integrate.api.nvidia.com", omniModel: "omni" } });
+  const trip = await workflow.createTrip({ employeeName: "ABC Employee Name", tripName: "ABC Trip", tripPurpose: "Customer meetings", totalFiles: 1 });
+  await workflow.processFile(trip.id, { fileName: "notes.txt", mimeType: "text/plain", contentBase64: Buffer.from("fake").toString("base64") });
+  const completed = await workflow.completeTrip(trip.id);
+  assert.equal(completed.status, "needs_info");
+  await assert.rejects(() => workflow.approveTrip(trip.id, "ABC Expense Reviewer"), /not ready for approval/i);
+});
+
+test("approval requires a non-employee approver", async () => {
+  const root = await mkdtemp(join(tmpdir(), "expense-approval-"));
+  await mkdir(join(root, "data", "sample-receipts"), { recursive: true });
+  await writeFile(join(root, "data", "sample-receipts", "manifest.json"), JSON.stringify([
+    { fileName: "meal.png", parseEvidence: "GARDEN CAFE\nDATE: 05/13/2026\nTOTAL - PLUS TAX $9.75\nPAID - CARD# ********7113" },
+  ]));
+  const store = new DataStore(root);
+  await store.ensure();
+  const audit = new AuditLogger(store);
+  const controls = new RuntimeControls({ toolAllowlist: ["trip.create", "receipt.store_upload", "policy.evaluate", "human.approve"] }, audit);
+  const workflow = new TripWorkflow({ store, audit, controls, policy, extractorOptions: { rootDir: root, mode: "local", parseBaseUrl: "https://integrate.api.nvidia.com", parseModel: "parse", omniBaseUrl: "https://integrate.api.nvidia.com", omniModel: "omni" } });
+  const trip = await workflow.createTrip({ employeeName: "ABC Employee Name", tripName: "ABC Trip", tripPurpose: "Customer meetings", totalFiles: 1 });
+  await workflow.processFile(trip.id, { fileName: "meal.png", mimeType: "image/png", contentBase64: Buffer.from("fake").toString("base64") });
+  await workflow.completeTrip(trip.id);
+  await assert.rejects(() => workflow.approveTrip(trip.id, "ABC Employee Name"), /different from the employee/i);
+  const approved = await workflow.approveTrip(trip.id, "ABC Expense Reviewer");
+  assert.equal(approved.status, "approved");
+  assert.equal(approved.approvedBy, "ABC Expense Reviewer");
+});
+
+test("policy authorization runs before policy evaluation is persisted", async () => {
+  const root = await mkdtemp(join(tmpdir(), "expense-policy-gate-"));
+  await mkdir(join(root, "data", "sample-receipts"), { recursive: true });
+  await writeFile(join(root, "data", "sample-receipts", "manifest.json"), JSON.stringify([
+    { fileName: "meal.png", parseEvidence: "GARDEN CAFE\nDATE: 05/13/2026\nTOTAL - PLUS TAX $9.75\nPAID - CARD# ********7113" },
+  ]));
+  const store = new DataStore(root);
+  await store.ensure();
+  const audit = new AuditLogger(store);
+  const controls = new RuntimeControls({ toolAllowlist: ["trip.create", "receipt.store_upload"] }, audit);
+  const workflow = new TripWorkflow({ store, audit, controls, policy, extractorOptions: { rootDir: root, mode: "local", parseBaseUrl: "https://integrate.api.nvidia.com", parseModel: "parse", omniBaseUrl: "https://integrate.api.nvidia.com", omniModel: "omni" } });
+  const trip = await workflow.createTrip({ employeeName: "ABC Employee Name", tripName: "ABC Trip", tripPurpose: "Customer meetings", totalFiles: 1 });
+  await assert.rejects(() => workflow.processFile(trip.id, { fileName: "meal.png", mimeType: "image/png", contentBase64: Buffer.from("fake").toString("base64") }), /policy\.evaluate/);
+  const state = await store.readState();
+  assert.equal(state.expenses.length, 0);
+  assert.equal(state.trips[0]?.expenseIds.length, 0);
+});

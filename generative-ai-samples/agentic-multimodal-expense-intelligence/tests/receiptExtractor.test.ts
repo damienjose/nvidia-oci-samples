@@ -44,3 +44,45 @@ test("auto mode fails explicitly when Nemotron keys are missing", async () => {
   const state = await store.readState();
   assert.equal(state.auditEvents[0]?.severity, "error");
 });
+
+test("Nemotron API failures are recorded in audit before bubbling up", async () => {
+  const root = await mkdtemp(join(tmpdir(), "expense-api-failure-"));
+  const store = new DataStore(root);
+  await store.ensure();
+  const audit = new AuditLogger(store);
+  const controls = new RuntimeControls({ allowedOutboundHosts: ["integrate.api.nvidia.com"] }, audit);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 503, text: async () => "service unavailable" }) as Response;
+  try {
+    await assert.rejects(
+      () =>
+        extractReceipt(
+          {
+            fileName: "receipt.png",
+            mimeType: "image/png",
+            contentBase64: Buffer.from("fake").toString("base64"),
+            receiptFileRef: "/uploads/receipt.png",
+            tripId: "trip_test",
+            expenseId: "exp_test",
+          },
+          {
+            rootDir: root,
+            mode: "nemotron",
+            parseBaseUrl: "https://integrate.api.nvidia.com",
+            parseModel: "nvidia/nemotron-parse",
+            parseApiKey: "nvapi-test",
+            omniBaseUrl: "https://integrate.api.nvidia.com",
+            omniModel: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+            omniApiKey: "nvapi-test",
+          },
+          audit,
+          controls,
+        ),
+      /Nemotron HTTP 503/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  const state = await store.readState();
+  assert(state.auditEvents.some((event) => event.action === "nemotron.parse.failed" && event.severity === "error"));
+});

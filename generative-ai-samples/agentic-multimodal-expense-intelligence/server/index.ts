@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, normalize } from "node:path";
+import { join, normalize, resolve, sep } from "node:path";
 import { DataStore } from "./dataStore.ts";
 import { AuditLogger } from "./audit.ts";
 import { RuntimeControls } from "./governance.ts";
@@ -87,7 +87,7 @@ const server = createServer(async (request, response) => {
       const body = await readRequestJson<{ fields: ReceiptFields }>(request);
       return sendJson(response, 200, await workflow.saveExpenseFields(fieldMatch[1], body.fields));
     }
-    return serveStatic(url.pathname, response);
+    return serveStatic(url.pathname, request, response);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return sendJson(response, 500, { error: message });
@@ -98,14 +98,28 @@ server.listen(port, host, () => {
   console.log(`Agentic Multimodal Expense Intelligence running at http://${host}:${port}/`);
 });
 
-async function serveStatic(pathname: string, response: import("node:http").ServerResponse): Promise<void> {
-  const publicRoot = join(rootDir, "public");
+async function serveStatic(pathname: string, request: IncomingMessage, response: import("node:http").ServerResponse): Promise<void> {
+  const publicRoot = resolve(rootDir, "public");
+  const uploadsRoot = resolve(rootDir, "data", "uploads");
   let candidate: string;
-  if (pathname === "/") candidate = join(publicRoot, "index.html");
-  else if (pathname.startsWith("/uploads/")) candidate = join(rootDir, "data", normalize(pathname).replace(/^\/uploads\/?/, "uploads/"));
-  else candidate = join(publicRoot, normalize(pathname).replace(/^\/+/, ""));
-  if (!candidate.startsWith(publicRoot) && !candidate.startsWith(join(rootDir, "data", "uploads"))) return sendText(response, 403, "Forbidden");
+  if (pathname === "/") candidate = resolve(publicRoot, "index.html");
+  else if (pathname.startsWith("/uploads/")) {
+    if (!isLocalRequest(request)) return sendText(response, 403, "Uploaded receipts are served only to local demo clients.");
+    candidate = resolve(uploadsRoot, normalize(pathname).replace(/^\/uploads\/?/, ""));
+  } else {
+    candidate = resolve(publicRoot, normalize(pathname).replace(/^\/+/, ""));
+  }
+  if (!insideRoot(candidate, publicRoot) && !insideRoot(candidate, uploadsRoot)) return sendText(response, 403, "Forbidden");
   if (!existsSync(candidate)) return sendText(response, 404, "Not found");
   response.writeHead(200, { "content-type": mimeFromPath(candidate) });
   response.end(await readFile(candidate));
+}
+
+function insideRoot(candidate: string, allowedRoot: string): boolean {
+  return candidate === allowedRoot || candidate.startsWith(`${allowedRoot}${sep}`);
+}
+
+function isLocalRequest(request: IncomingMessage): boolean {
+  const address = request.socket.remoteAddress ?? "";
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }

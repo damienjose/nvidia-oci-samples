@@ -31,7 +31,7 @@ export class RuntimeControls {
   }
 
   async authorizeTool(trip: TripRecord | undefined, toolAction: string, summary: string): Promise<void> {
-    const allowed = this.policy.toolAllowlist?.includes(toolAction) ?? true;
+    const allowed = Array.isArray(this.policy.toolAllowlist) && this.policy.toolAllowlist.includes(toolAction);
     const status = allowed ? "authorized" : "blocked";
     if (trip) {
       trip.agentTrace.steps.push({ id: newId("step"), timestamp: nowIso(), toolAction, status, summary });
@@ -49,7 +49,7 @@ export class RuntimeControls {
 
   async assertOutboundAllowed(hostOrUrl: string, tripId?: string): Promise<void> {
     const host = hostOrUrl.startsWith("http") ? new URL(hostOrUrl).hostname : hostOrUrl;
-    const allowed = this.policy.allowedOutboundHosts?.includes(host) ?? true;
+    const allowed = Array.isArray(this.policy.allowedOutboundHosts) && this.policy.allowedOutboundHosts.includes(host);
     await this.audit.write({
       type: "runtime.network_policy",
       severity: allowed ? "info" : "error",

@@ -91,6 +91,7 @@ export class TripWorkflow {
     const extractionMs = Math.round(performance.now() - extractStarted);
     const fields: ReceiptFields = { ...extracted.fields, receiptFileRef };
     const policyStarted = performance.now();
+    await this.controls.authorizeTool(trip, "policy.evaluate", `Evaluate ABC Company policy for ${file.fileName}.`);
     const policyChecks = evaluatePolicy({ savedFields: fields }, trip.tripPurpose, this.policy);
     const policyMs = Math.round(performance.now() - policyStarted);
     const expense: ExpenseRecord = {
@@ -113,7 +114,6 @@ export class TripWorkflow {
     trip.expenseIds.push(expense.id);
     trip.processedFiles += 1;
     trip.updatedAt = nowIso();
-    await this.controls.authorizeTool(trip, "policy.evaluate", `Evaluate ABC Company policy for ${file.fileName}.`);
     await this.store.updateTrip(trip);
     await this.audit.write({ type: "receipt.processed", actor: "expense-intelligence-agent", action: "receipt.process", tripId, expenseId, details: { fileName: file.fileName, status: expense.status, durationMs: Math.round(performance.now() - started) } });
     return { trip, expense };
@@ -142,12 +142,15 @@ export class TripWorkflow {
   }
 
   async approveTrip(tripId: string, approvedBy: string): Promise<TripRecord> {
+    const approver = approvedBy.trim();
+    if (!approver) throw new Error("Approver identity is required.");
     const trip = await this.completeTrip(tripId);
     await this.controls.authorizeTool(trip, "human.approve", "Human approval gate before downstream expense handoff.");
     if (trip.status !== "ready_for_review") throw new Error(`Trip is not ready for approval. Current status: ${trip.status}`);
+    if (samePerson(approver, trip.employeeName)) throw new Error("Approver must be different from the employee submitting the trip.");
     trip.status = "approved";
     trip.approvedAt = nowIso();
-    trip.approvedBy = approvedBy || trip.employeeName;
+    trip.approvedBy = approver;
     trip.updatedAt = nowIso();
     await this.store.updateTrip(trip);
     await this.audit.write({ type: "human.approval", actor: trip.approvedBy, action: "trip.approve", tripId, details: { approvedAt: trip.approvedAt } });
@@ -180,9 +183,14 @@ export class TripWorkflow {
 }
 
 function tripStatus(expenses: ExpenseRecord[]): TripRecord["status"] {
+  if (expenses.length === 0) return "needs_info";
   if (expenses.some((expense) => expense.status === "blocked")) return "blocked";
   if (expenses.some((expense) => expense.status === "needs_info")) return "needs_info";
   return "ready_for_review";
+}
+
+function samePerson(left: string, right: string): boolean {
+  return left.trim().localeCompare(right.trim(), undefined, { sensitivity: "base" }) === 0;
 }
 
 function computeStats(expenses: ExpenseRecord[]): Record<string, unknown> {
