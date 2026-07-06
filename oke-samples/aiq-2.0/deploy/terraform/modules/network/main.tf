@@ -209,7 +209,7 @@ resource "oci_core_network_security_group_security_rule" "oke_workers_ingress_ap
   network_security_group_id = oci_core_network_security_group.oke_workers.id
   direction                 = "INGRESS"
   protocol                  = "6"
-  source                    = "0.0.0.0/0"
+  source                    = var.vcn_cidr
   source_type               = "CIDR_BLOCK"
   stateless                 = false
   description               = "Allow K8s API server to worker kubelet"
@@ -226,7 +226,7 @@ resource "oci_core_network_security_group_security_rule" "oke_workers_ingress_ok
   network_security_group_id = oci_core_network_security_group.oke_workers.id
   direction                 = "INGRESS"
   protocol                  = "6"
-  source                    = "0.0.0.0/0"
+  source                    = var.vcn_cidr
   source_type               = "CIDR_BLOCK"
   stateless                 = false
   description               = "Allow OKE control plane node management (Enhanced cluster)"
@@ -303,7 +303,7 @@ resource "oci_core_network_security_group_security_rule" "oke_api_ingress_6443_p
   network_security_group_id = oci_core_network_security_group.oke_api.id
   direction                 = "INGRESS"
   protocol                  = "6"
-  source                    = "0.0.0.0/0"
+  source                    = var.api_allowed_cidr
   source_type               = "CIDR_BLOCK"
   stateless                 = false
   description               = "K8s API access from external (kubectl)"

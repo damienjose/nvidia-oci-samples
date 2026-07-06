@@ -97,6 +97,12 @@ variable "ssh_public_key" {
   default     = ""
 }
 
+variable "api_allowed_cidr" {
+  description = "CIDR allowed to reach the Kubernetes API endpoint publicly (kubectl). Restrict to office/VPN ranges for production."
+  type        = string
+  default     = "0.0.0.0/0"
+}
+
 # -----------------------------------------------------------------------------
 # Vault secrets
 # -----------------------------------------------------------------------------

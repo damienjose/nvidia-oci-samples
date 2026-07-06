@@ -26,12 +26,6 @@ variable "node_pool_id" {
   type        = string
 }
 
-variable "node_pool_size" {
-  description = "Number of nodes in the node pool (must match the OKE module's pool size)"
-  type        = number
-  default     = 1
-}
-
 variable "frontend_node_port" {
   description = "Fixed NodePort for the frontend service"
   type        = number

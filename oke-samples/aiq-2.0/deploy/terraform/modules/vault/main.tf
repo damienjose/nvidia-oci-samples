@@ -26,7 +26,7 @@ resource "oci_kms_key" "master" {
 
 # Create a secret for each entry in var.secrets
 resource "oci_vault_secret" "this" {
-  for_each       = var.secrets
+  for_each       = nonsensitive(toset(keys(var.secrets)))
   compartment_id = var.compartment_id
   vault_id       = oci_kms_vault.this.id
   key_id         = oci_kms_key.master.id
@@ -35,6 +35,6 @@ resource "oci_vault_secret" "this" {
 
   secret_content {
     content_type = "BASE64"
-    content      = each.value
+    content      = var.secrets[each.key]
   }
 }

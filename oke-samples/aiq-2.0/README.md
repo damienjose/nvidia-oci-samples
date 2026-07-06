@@ -14,7 +14,7 @@ No image builds, no clone of the AI-Q repo. All container images come straight f
 
 ## Architecture
 
-```
+```text
 Internet
    │
    ▼
@@ -116,7 +116,19 @@ kubectl get nodes        # sanity check
 
 ### 2b. Create the namespace and secrets
 
+> **These values must match what you set in `terraform.tfvars` in Step 1.**
+> Terraform already stored them in OCI Vault (`<prefix>-db-user-password`,
+> `<prefix>-nvidia-api-key`, `<prefix>-tavily-api-key`). The Kubernetes secret
+> below must carry the *same* values, or the backend won't be able to reach
+> PostgreSQL and the API keys won't work. Set the shell variables to the exact
+> `db_admin_password`, `nvidia_api_key`, and `tavily_api_key` you configured:
+
 ```bash
+# Must match terraform.tfvars (Step 1)
+export DB_USER_PASSWORD="<same as db_admin_password in terraform.tfvars>"
+export NGC_API_KEY="<same as nvidia_api_key in terraform.tfvars>"
+export TAVILY_API_KEY="<same as tavily_api_key in terraform.tfvars>"
+
 kubectl create namespace ns-aiq --dry-run=client -o yaml | kubectl apply -f -
 
 # API credentials consumed by the application
@@ -124,7 +136,7 @@ kubectl create secret generic aiq-credentials -n ns-aiq \
   --from-literal=NVIDIA_API_KEY="$NGC_API_KEY" \
   --from-literal=TAVILY_API_KEY="$TAVILY_API_KEY" \
   --from-literal=DB_USER_NAME="aiq" \
-  --from-literal=DB_USER_PASSWORD="aiq_dev"
+  --from-literal=DB_USER_PASSWORD="$DB_USER_PASSWORD"
 
 # Image pull secret for nvcr.io (NGC container registry)
 kubectl create secret docker-registry ngc-secret -n ns-aiq \
@@ -160,7 +172,7 @@ kubectl get pods -n ns-aiq
 
 Expected:
 
-```
+```text
 NAME                            READY   STATUS    RESTARTS   AGE
 aiq-backend-xxx                 1/1     Running   0          1m
 aiq-frontend-xxx                1/1     Running   0          1m
@@ -225,7 +237,7 @@ kubectl describe pvc -n ns-aiq aiq-postgres-data
 
 ## File layout
 
-```
+```text
 deploy/
 ├── README.md                                ← this file
 └── oci/
