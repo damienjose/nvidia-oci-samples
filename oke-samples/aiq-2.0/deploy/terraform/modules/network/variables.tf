@@ -27,7 +27,13 @@ variable "public_subnet_cidr" {
 variable "oke_subnet_cidr" {
   description = "CIDR for the private OKE worker subnet"
   type        = string
-  default     = "10.0.1.0/24"
+  default     = "10.0.16.0/20"
+}
+
+variable "api_allowed_cidr" {
+  description = "CIDR allowed to reach the Kubernetes API endpoint publicly (kubectl). Restrict to office/VPN ranges for production."
+  type        = string
+  default     = "0.0.0.0/0"
 }
 
 variable "freeform_tags" {

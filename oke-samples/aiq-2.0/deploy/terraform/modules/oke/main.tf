@@ -24,6 +24,15 @@ locals {
   node_image_id = var.node_image_id != "" ? var.node_image_id : local.compatible_images[0]
 }
 
+resource "terraform_data" "validate_node_image" {
+  lifecycle {
+    precondition {
+      condition     = var.node_image_id != "" || length(local.compatible_images) > 0
+      error_message = "No compatible OKE node image found for Kubernetes ${var.kubernetes_version} (filter: Oracle-Linux-8 + ${local.k8s_minor}, non-ARM, non-GPU). Set var.node_image_id explicitly."
+    }
+  }
+}
+
 # -----------------------------------------------------------------------------
 # OKE Cluster
 # -----------------------------------------------------------------------------
@@ -88,9 +97,12 @@ resource "oci_containerengine_node_pool" "workers" {
     is_pv_encryption_in_transit_enabled = true
     freeform_tags                       = var.freeform_tags
 
-    placement_configs {
-      availability_domain = data.oci_identity_availability_domains.this.availability_domains[0].name
-      subnet_id           = var.oke_subnet_id
+    dynamic "placement_configs" {
+      for_each = data.oci_identity_availability_domains.this.availability_domains
+      content {
+        availability_domain = placement_configs.value.name
+        subnet_id           = var.oke_subnet_id
+      }
     }
 
     node_pool_pod_network_option_details {

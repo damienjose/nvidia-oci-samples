@@ -48,11 +48,15 @@ resource "oci_load_balancer_backend_set" "frontend" {
 # --- One backend per active worker node ---
 
 resource "oci_load_balancer_backend" "frontend" {
-  count = var.node_pool_size
+  for_each = {
+    for node in data.oci_containerengine_node_pool.this.nodes :
+    node.id => node
+    if node.private_ip != null && node.private_ip != ""
+  }
 
   load_balancer_id = oci_load_balancer_load_balancer.this.id
   backendset_name  = oci_load_balancer_backend_set.frontend.name
-  ip_address       = data.oci_containerengine_node_pool.this.nodes[count.index].private_ip
+  ip_address       = each.value.private_ip
   port             = var.frontend_node_port
 }
 

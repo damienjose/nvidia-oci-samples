@@ -20,9 +20,10 @@ provider "oci" {
 module "network" {
   source = "./modules/network"
 
-  compartment_id = var.compartment_id
-  label_prefix   = var.label_prefix
-  freeform_tags  = var.freeform_tags
+  compartment_id   = var.compartment_id
+  label_prefix     = var.label_prefix
+  freeform_tags    = var.freeform_tags
+  api_allowed_cidr = var.api_allowed_cidr
 }
 
 # -----------------------------------------------------------------------------
@@ -79,7 +80,6 @@ module "loadbalancer" {
   public_subnet_id   = module.network.public_subnet_id
   nsg_lb_id          = module.network.nsg_lb_id
   node_pool_id       = module.oke.node_pool_id
-  node_pool_size     = var.node_pool_size
   frontend_node_port = var.frontend_node_port
   freeform_tags      = var.freeform_tags
 }

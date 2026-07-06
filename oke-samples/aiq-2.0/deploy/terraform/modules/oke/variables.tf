@@ -49,18 +49,6 @@ variable "node_pool_size" {
   default     = 1
 }
 
-variable "node_pool_min" {
-  description = "Minimum number of nodes (autoscaling)"
-  type        = number
-  default     = 1
-}
-
-variable "node_pool_max" {
-  description = "Maximum number of nodes (autoscaling)"
-  type        = number
-  default     = 5
-}
-
 variable "node_shape" {
   description = "Compute shape for worker nodes"
   type        = string
