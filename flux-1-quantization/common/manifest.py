@@ -1,0 +1,198 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+"""Run provenance.
+
+Everything this harness produces is meant to be handed to someone else and
+re-run. That only works if we record exactly what produced it: GPU, driver,
+container, library versions, model revisions, and the commands as executed.
+
+Each stage appends to ``results/run_manifest.json``. Nothing here needs a GPU,
+so the manifest still gets written when a stage fails.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import platform
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+MANIFEST_NAME = "run_manifest.json"
+
+# Recorded because a mismatch between these and the reference report is the
+# first thing to check when numbers disagree.
+TRACKED_PACKAGES = (
+    "torch",
+    "diffusers",
+    "transformers",
+    "nvidia-modelopt",
+    "tensorrt_llm",
+    "safetensors",
+    "accelerate",
+)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _run(cmd: list[str]) -> str | None:
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = out.stdout.strip()
+    return value or None
+
+
+def _package_versions() -> dict[str, str | None]:
+    try:
+        from importlib import metadata
+    except ImportError:  # pragma: no cover - Python < 3.8 only
+        return {}
+    versions: dict[str, str | None] = {}
+    for name in TRACKED_PACKAGES:
+        try:
+            versions[name] = metadata.version(name)
+        except Exception:
+            versions[name] = None
+    return versions
+
+
+def gpu_info() -> dict[str, Any]:
+    """GPU description without importing torch.
+
+    Uses nvidia-smi so preflight can report something useful even when the
+    Python environment is broken.
+    """
+    query = "name,driver_version,memory.total,compute_cap,uuid"
+    raw = _run(["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader"])
+    if not raw:
+        return {"available": False}
+
+    devices = []
+    for line in raw.splitlines():
+        fields = [f.strip() for f in line.split(",")]
+        if len(fields) != 5:
+            continue
+        devices.append(
+            {
+                "name": fields[0],
+                "driver": fields[1],
+                "memory_total": fields[2],
+                "compute_capability": fields[3],
+                "uuid": fields[4],
+            }
+        )
+
+    caps = {d["compute_capability"] for d in devices}
+    return {
+        "available": bool(devices),
+        "count": len(devices),
+        "devices": devices,
+        # sm_100 is B200, sm_103 is GB300. Serving behaviour differs between
+        # them, so a result from one is not evidence for the other.
+        "architecture": sorted(caps),
+    }
+
+
+def environment() -> dict[str, Any]:
+    """Everything needed to reproduce or diagnose a run."""
+    return {
+        "captured_at": _utc_now(),
+        "hostname": platform.node(),
+        "cpu_arch": platform.machine(),
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "gpu": gpu_info(),
+        "packages": _package_versions(),
+        "container_image": os.environ.get("NVIDIA_PRODUCT_NAME")
+        or os.environ.get("SINGULARITY_CONTAINER")
+        or os.environ.get("CONTAINER_IMAGE"),
+        "slurm": {
+            key.lower(): os.environ[key]
+            for key in ("SLURM_JOB_ID", "SLURM_JOB_NODELIST", "SLURM_JOB_PARTITION")
+            if key in os.environ
+        }
+        or None,
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+    }
+
+
+def file_digest(path: Path, *, chunk: int = 1 << 20) -> str:
+    """SHA-256 of a file. Used for artefacts small enough to be worth hashing."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(chunk):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+class Manifest:
+    """Append-only record of a run, persisted after every stage."""
+
+    def __init__(self, results_dir: Path):
+        self.path = results_dir / MANIFEST_NAME
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.data: dict[str, Any] = self._load()
+
+    def _load(self) -> dict[str, Any]:
+        if self.path.exists():
+            try:
+                return json.loads(self.path.read_text())
+            except json.JSONDecodeError:
+                # A corrupt manifest should not block a run. Keep the old file
+                # so it can be inspected, and start a fresh one.
+                self.path.rename(self.path.with_suffix(".json.corrupt"))
+        return {"created_at": _utc_now(), "environment": environment(), "stages": []}
+
+    def record(
+        self,
+        stage: str,
+        *,
+        status: str,
+        command: list[str] | None = None,
+        outputs: dict[str, Any] | None = None,
+        notes: str | None = None,
+        duration_s: float | None = None,
+    ) -> None:
+        self.data["stages"].append(
+            {
+                "stage": stage,
+                "status": status,
+                "at": _utc_now(),
+                "duration_s": round(duration_s, 1) if duration_s is not None else None,
+                "command": command,
+                "outputs": outputs or {},
+                "notes": notes,
+            }
+        )
+        self.save()
+
+    def save(self) -> None:
+        """Write the manifest atomically.
+
+        Written to a temporary file in the same directory and then renamed.
+        ``os.replace`` is atomic within a filesystem, so a reader sees either
+        the old manifest or the new one and never a half-written file. A direct
+        write that is interrupted -- an allocation ending, a node going away --
+        truncates the only record of an export that took twelve minutes.
+        """
+        self.data["updated_at"] = _utc_now()
+        payload = json.dumps(self.data, indent=2, sort_keys=False) + "\n"
+
+        tmp = self.path.with_name(f".{self.path.name}.tmp")
+        tmp.write_text(payload)
+        os.replace(tmp, self.path)
+
+    def stage_status(self, stage: str) -> str | None:
+        for entry in reversed(self.data["stages"]):
+            if entry["stage"] == stage:
+                return entry["status"]
+        return None

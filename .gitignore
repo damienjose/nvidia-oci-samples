@@ -1,0 +1,33 @@
+# macOS Finder metadata. Created automatically whenever a directory is opened,
+# so match at any depth rather than just the root.
+.DS_Store
+**/.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows equivalents, for anyone working on this from there.
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editor and IDE state.
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Per-developer Claude Code settings. `settings.local.json` is explicitly the
+# local-override file and is not meant to be shared; a checked-in copy would
+# apply one person's tool permissions to everyone.
+.claude/settings.local.json
+
+# Python, for samples that do not carry their own ignore file. Sample
+# directories with their own .gitignore keep it -- git applies the nearest one,
+# so a per-sample file overrides nothing here, it adds to it.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/

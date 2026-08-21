@@ -1,0 +1,86 @@
+{
+  "description": "Paired-comparison prompt set. Categories over-sample the failure modes that matter for sign-off: text rendering, counting, spatial relations and anatomy. Averages hide those; category breakdowns do not.",
+  "prompts": [
+    {
+      "id": "text-01",
+      "category": "text-rendering",
+      "text": "A weathered wooden shop sign hanging above a cobbled street, the words 'OPEN DAILY' carved and painted in white, late afternoon light"
+    },
+    {
+      "id": "text-02",
+      "category": "text-rendering",
+      "text": "A close-up of a paperback book cover on a desk, the title 'THE LONG SUMMER' in bold serif type, a coffee ring beside it"
+    },
+    {
+      "id": "count-01",
+      "category": "counting",
+      "text": "Exactly five green apples arranged in a row on a white marble countertop, even studio lighting"
+    },
+    {
+      "id": "count-02",
+      "category": "counting",
+      "text": "Three identical red bicycles leaning against a brick wall, seen straight on"
+    },
+    {
+      "id": "spatial-01",
+      "category": "spatial",
+      "text": "A black cat sitting to the left of a blue ceramic vase, with a folded newspaper underneath the vase"
+    },
+    {
+      "id": "spatial-02",
+      "category": "spatial",
+      "text": "A drone photograph of a small island with a lighthouse on its northern tip and a jetty extending south",
+      "note": "Compositional layout rather than object presence"
+    },
+    {
+      "id": "anatomy-01",
+      "category": "anatomy",
+      "text": "A potter's hands shaping wet clay on a wheel, close up, both hands fully visible, natural window light"
+    },
+    {
+      "id": "anatomy-02",
+      "category": "anatomy",
+      "text": "A violinist mid-performance, fingers on the fingerboard and bow hand in motion, warm stage lighting"
+    },
+    {
+      "id": "photo-01",
+      "category": "photography",
+      "text": "A misty pine forest at dawn, shafts of light between the trunks, shot on medium format film"
+    },
+    {
+      "id": "photo-02",
+      "category": "photography",
+      "text": "A rain-slicked city street at night, neon reflections in the puddles, shallow depth of field"
+    },
+    {
+      "id": "product-01",
+      "category": "product",
+      "text": "A brushed aluminium wristwatch on a dark slate surface, single softbox from the upper left, crisp specular highlights"
+    },
+    {
+      "id": "product-02",
+      "category": "product",
+      "text": "A glass bottle of olive oil against a plain cream background, label facing forward, gentle gradient lighting"
+    },
+    {
+      "id": "portrait-01",
+      "category": "portrait",
+      "text": "An environmental portrait of an older fisherman on a harbour wall, weathered face, overcast light, 85mm lens"
+    },
+    {
+      "id": "detail-01",
+      "category": "fine-detail",
+      "text": "A macro photograph of a dragonfly wing, individual veins and iridescence visible, shallow focus"
+    },
+    {
+      "id": "complex-01",
+      "category": "complex-scene",
+      "text": "A busy morning farmers market with stalls of citrus and flowers, several shoppers, a striped awning overhead, and a chalkboard price sign"
+    },
+    {
+      "id": "style-01",
+      "category": "art-style",
+      "text": "An oil painting in the style of a nineteenth century seascape, heavy impasto, a small boat against a breaking wave"
+    }
+  ]
+}
