@@ -371,6 +371,13 @@ def rank_breakdown(
 
 
 def _coverage(states: dict[str, str]) -> dict[str, Any]:
+    """Summarise how much of the component was quantized.
+
+    Counted over weight-bearing modules rather than tensors. Each quantized
+    module contributes several tensors -- packed weights plus block and tensor
+    scales -- so a tensor count would report a share that rises purely because
+    quantization adds tensors.
+    """
     counts = Counter(states.values())
     total = sum(counts.values())
     return {
@@ -563,6 +570,12 @@ def largest_tensors(
 
 
 def _dtype_histogram(tensors: dict[str, dict[str, Any]], component: str | None = None) -> dict:
+    """Count tensors by dtype, most common first.
+
+    The quickest read on whether an export is what it claims: a static NVFP4
+    transformer is mostly ``U8`` with an ``F8_E4M3`` scale per quantized layer,
+    and one that is still overwhelmingly ``BF16`` never had the recipe applied.
+    """
     return dict(
         Counter(
             t["dtype"]
@@ -582,6 +595,19 @@ def _pick_transformer(tensors: dict[str, dict[str, Any]]) -> str:
 
 
 def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
+    """Report which layers carry 4-bit weights, and whether the filter agrees.
+
+    Reads dtypes straight out of the safetensors headers -- no weights are ever
+    loaded, so this runs on a login node without a GPU -- and writes
+    ``results/schema_diff-<model>.json`` plus a per-tensor inventory CSV. Needs
+    the export stage.
+
+    The authoritative check imports Model Optimizer's real ``filter_func`` and
+    evaluates it against every module found. If that import fails the stage still
+    completes and still reports dtypes, but says the filter was not checked. That
+    line is worth reading: a run without the filter check looks almost identical
+    to one with it and proves considerably less.
+    """
     config = json.loads(config_path.read_text())
 
     ours_dir = workspace.exports / paths.export_dir_name(config) / "hf"

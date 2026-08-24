@@ -96,25 +96,36 @@ class Workspace:
 
     @property
     def models(self) -> Path:
+        """Where checkpoints live, which is not necessarily under the workspace.
+
+        The only one of these that can point outside the workspace root. A 34 GB
+        baseline is worth sharing across a team; outputs are not, because the
+        stages write to fixed paths and two people would overwrite each other.
+        """
         return self.models_override or (self.root / "models")
 
     @property
     def exports(self) -> Path:
+        """Quantized checkpoints, one directory per configuration."""
         return self.root / "exports"
 
     @property
     def images(self) -> Path:
+        """Generated images, one subdirectory per arm or per export."""
         return self.root / "images"
 
     @property
     def results(self) -> Path:
+        """Manifests, reports and scores -- everything a reader needs afterwards."""
         return self.root / "results"
 
     @property
     def hf_home(self) -> Path:
+        """Hugging Face cache, kept off the home directory it will not fit in."""
         return self.root / "hf"
 
     def directories(self) -> tuple[Path, ...]:
+        """Every directory a run writes to, for ``ensure`` and for reporting."""
         return (self.models, self.exports, self.images, self.results, self.hf_home)
 
     def ensure(self) -> None:
@@ -123,6 +134,14 @@ class Workspace:
             directory.mkdir(parents=True, exist_ok=True)
 
     def warnings(self) -> list[str]:
+        """Things worth saying before a long run, none of them fatal.
+
+        Returned rather than printed so the caller decides where they go -- the
+        preflight stage puts them in the manifest as well as on the terminal.
+        Both cases cost hours if they are discovered late: node-local storage is
+        wiped when the allocation ends, and a volume that is merely large enough
+        for one arm fails partway through the second.
+        """
         messages: list[str] = []
         if self.ephemeral:
             messages.append(
@@ -191,11 +210,25 @@ def _free_gb(path: Path) -> float:
 
 
 def _looks_ephemeral(path: Path) -> bool:
+    """Whether a path sits on storage that disappears with the allocation.
+
+    Matched on the resolved path, since scratch is often reached by symlink, and
+    with an explicit trailing separator: a bare ``startswith`` would report
+    ``/raid2`` as node-local because it begins with ``/raid``.
+    """
     resolved = str(path.resolve())
     return any(resolved == root or resolved.startswith(root + "/") for root in EPHEMERAL_ROOTS)
 
 
 def _autodetect(user: str) -> tuple[Path, str] | None:
+    """Guess a workspace root, preferring persistent scratch over node-local disk.
+
+    Order matters more than coverage. Node-local RAID is faster and usually
+    larger, but it is wiped when the allocation ends, so it is only offered once
+    every persistent candidate has been ruled out. The returned label says which
+    kind was found, so the caller can warn rather than silently accept storage
+    that will not survive the run.
+    """
     # glob.glob rather than manual prefix matching. The hand-rolled version took
     # everything before the first '*' as the base and matched on its trailing
     # segment, so a pattern with a '*' in the middle -- "/lustre/fsw/*/{user}" --

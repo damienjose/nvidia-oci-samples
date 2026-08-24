@@ -64,6 +64,12 @@ NVFP4_ARMS = (
 
 
 def _load_pairs(image_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Read an image directory's metadata, returning the header and the records.
+
+    Both halves are returned because the caller needs each: the records to pair
+    on, and the header to know how they were paired -- injected latents or seed
+    alone -- which decides how much a per-image number is worth.
+    """
     metadata_path = image_dir / "metadata.json"
     if not metadata_path.exists():
         raise RuntimeError(f"No metadata.json in {image_dir}. Run the dynamic stage first.")
@@ -72,6 +78,12 @@ def _load_pairs(image_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
 
 def _psnr(a, b) -> float:
+    """Peak signal-to-noise ratio between two images, in decibels.
+
+    Identical images give infinity, which is a real result and not an error --
+    and the reason the report sanitises non-finite floats before writing JSON.
+    Computed in float64 so the squared error does not saturate.
+    """
     import numpy as np
 
     a = np.asarray(a, dtype=np.float64)
@@ -274,6 +286,19 @@ def _cmmd(image_dir: Path, records: list[dict[str, Any]], workspace_root: Path) 
 
 
 def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
+    """Score a directory of paired images and write the quality report.
+
+    Driven entirely by the ``metadata.json`` in the image directory, so the same
+    code scores the dynamic arm, a restored arm or a served directory without
+    knowing which produced it -- pass ``--images`` to pick one. Writes
+    ``results/quality.json`` and a named archive copy the next run will not
+    overwrite, because a second scoring run has already destroyed a set of
+    numbers once. Runs without a GPU.
+
+    Prompt ids absent from the current prompts file are fatal rather than
+    skipped. CLIP would otherwise score both arms against an empty caption and
+    write a ``clip_delta`` that is indistinguishable from a good result.
+    """
     config = json.loads(config_path.read_text())
     image_dir = Path(getattr(args, "images", None) or workspace.images / "dynamic")
 

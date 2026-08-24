@@ -35,6 +35,13 @@ class GenerationSpec:
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "GenerationSpec":
+        """Build the spec from a model config's ``generation`` block.
+
+        Every key is read without a default, so a config missing one fails here
+        rather than silently generating at a different resolution or step count
+        than the arm it is about to be compared against. Nothing about a paired
+        comparison survives the two arms being generated differently.
+        """
         gen = config["generation"]
         return cls(
             height=gen["height"],
@@ -67,6 +74,16 @@ def make_latents(spec: GenerationSpec, seed: int, *, device: str = "cpu", dtype=
 
 
 def latent_digest(latents) -> str:
+    """Short hash of a latent tensor, for proving two arms started identically.
+
+    Recorded per image so a paired comparison can be checked rather than
+    assumed. If the digests differ for the same prompt and seed, the two arms
+    began from different noise and every per-image number downstream is
+    meaningless -- while still looking entirely plausible.
+
+    Copied to CPU and cast to float32 first, so the digest is stable across
+    devices and dtypes and can be compared between runs.
+    """
     import numpy as np
 
     array = latents.detach().to("cpu", copy=True).float().numpy().astype(np.float32)
@@ -110,6 +127,13 @@ def load_prompts(config: dict[str, Any], repository_root: Path, limit: int | Non
 
 
 def image_name(prompt_id: str, seed: int, arm: str) -> str:
+    """Filename encoding the prompt, seed and arm that produced an image.
+
+    All three are in the name because pairing is done on them, and a directory of
+    images has to remain readable after it has been copied somewhere without its
+    ``metadata.json``. The arm in particular: two files differing only by
+    precision are otherwise indistinguishable on disk.
+    """
     return f"{prompt_id}__seed{seed}__{arm}.png"
 
 

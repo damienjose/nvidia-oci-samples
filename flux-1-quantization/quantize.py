@@ -44,6 +44,15 @@ SUPPORTED_MODELS = ("flux-dev", "flux-schnell")
 
 @dataclass(frozen=True)
 class Stage:
+    """One step of the pipeline, and what it needs to run.
+
+    ``container`` and ``needs_gpu`` are recorded rather than enforced. Quantizing
+    and serving require different containers -- the Model Optimizer version that
+    produces a Diffusers export conflicts with the one TensorRT-LLM pins -- so no
+    single environment can run every stage, and the harness says what a stage
+    expects instead of pretending it can provide it.
+    """
+
     name: str
     module: str
     summary: str
@@ -107,6 +116,11 @@ STAGE_BY_NAME = {stage.name: stage for stage in STAGES}
 
 
 def list_stages() -> None:
+    """Print the pipeline order, GPU needs and container per stage.
+
+    Exists so the container split is discoverable without reading the source or
+    hitting it as a failure halfway through a run.
+    """
     width = max(len(s.name) for s in STAGES)
     print("Stages run in this order:\n")
     for index, stage in enumerate(STAGES, start=1):
@@ -120,6 +134,17 @@ def list_stages() -> None:
 
 
 def select(args: argparse.Namespace) -> list[Stage]:
+    """Resolve the command line into the stages to run, in pipeline order.
+
+    ``--stage`` is a set, not a sequence: the order is always the pipeline's, so
+    naming them in the wrong order cannot produce a run that executes an export
+    before its download. ``--from``/``--through`` slice inclusively.
+
+    Every rejection here is a ``SystemExit`` with a readable message rather than
+    an exception, because the alternative is a traceback for a typo. An inverted
+    range is rejected for the same reason -- it slices to nothing and would
+    otherwise exit zero having done nothing at all.
+    """
     if args.stage:
         unknown = [name for name in args.stage if name not in STAGE_BY_NAME]
         if unknown:
@@ -150,6 +175,13 @@ def select(args: argparse.Namespace) -> list[Stage]:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Assemble the command-line interface.
+
+    Separate from ``main`` so the parser can be built and inspected in tests
+    without running anything. Help text carries the reasoning behind the defaults
+    -- which arm to start with, why checkpoints are shared -- because that is
+    where someone reaches when a flag does not do what they expected.
+    """
     parser = argparse.ArgumentParser(
         prog="quantize.py",
         description=__doc__,
@@ -195,6 +227,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Resolve the workspace, then run the selected stages in order.
+
+    Returns a process exit code rather than raising: 0 for a clean run, 1 if any
+    stage failed, 2 for a problem found before any stage started.
+
+    A failing stage is recorded in the manifest and then stops the run, so the
+    file always says which stage broke and what it was doing. Completion is
+    tracked per workspace and not per model, which is why running a second arm
+    needs ``--force``.
+    """
     args = build_parser().parse_args(argv)
 
     if args.list_stages:

@@ -154,6 +154,13 @@ def describe_export(hf_dir: Path) -> dict[str, object]:
 
 
 def main() -> int:
+    """Report which documented consumers of the packed export are importable here.
+
+    Loads no weights and touches no GPU, so it is safe on a login node. Exists to
+    separate "this checkpoint does not serve" from "the runtime that reads it is
+    not installed in this container" -- two conclusions that look identical from a
+    failed load and have entirely different remedies.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hf-ckpt-dir", type=Path, help="The packed --hf-ckpt-dir export")
     args = parser.parse_args()

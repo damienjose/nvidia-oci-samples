@@ -57,6 +57,13 @@ this, so nothing here substitutes a private configuration for the public one."""
 
 
 def _find_modelopt(workspace) -> Path | None:
+    """Locate a Model-Optimizer diffusers example directory, or None.
+
+    Checked for ``quantize.py`` rather than just the directory, because a partial
+    or wrongly-nested clone is the common mistake and it fails much less clearly
+    later. None is returned instead of raising so a dry run can still print the
+    command it would have run.
+    """
     for candidate in MODELOPT_SEARCH:
         expanded = os.path.expandvars(candidate.replace("$WORKSPACE", str(workspace.root)))
         path = Path(expanded).expanduser()
@@ -228,6 +235,20 @@ def materialize_out_channels(hf_ckpt_dir: Path) -> dict[str, Any]:
 
 
 def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
+    """Run Model Optimizer's own quantize.py and produce the deliverable.
+
+    Writes two artefacts with different consumers: ``exports/<name>/hf``, the
+    packed Diffusers export that actually serves, and ``exports/<name>/torch``,
+    the fake-quantized checkpoint ``mto.restore`` reads. Needs the download stage
+    and a Model-Optimizer checkout reachable from ``MODELOPT_DIFFUSERS_DIR``.
+    Expect 30 minutes to 2 hours.
+
+    A zero exit code is not success on its own. The stage fails if the Diffusers
+    export is missing or empty, because that directory is the only artefact worth
+    having and Model Optimizer can exit cleanly without producing it. Two repairs
+    are applied afterwards and recorded in the manifest -- group read on weights
+    written at 0600, and the ``out_channels`` value TRT-LLM VisualGen needs.
+    """
     config = json.loads(config_path.read_text())
     quant = config["quantization"]
 

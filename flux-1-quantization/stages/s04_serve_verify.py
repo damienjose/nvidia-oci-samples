@@ -212,6 +212,19 @@ def _serving_note(hf_ckpt_dir: Path) -> str:
 
 
 def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
+    """Restore the quantized checkpoint and generate images from it.
+
+    Writes a BF16 arm alongside every NVFP4 arm that loaded into
+    ``images/verify/<export>``, with a ``metadata.json``, so the directory is a
+    self-contained comparison the quality stage can score without reference to
+    anything else. Needs the export stage, plus the BF16 baseline that
+    ``mto.restore`` sits on top of.
+
+    Every load attempt is recorded, successful or not, and only the documented
+    ``mto.restore`` path failing is fatal. A stock Diffusers pipeline refusing the
+    Hugging Face export is an observation about an unsupported loader rather than
+    a defect, and treating it as one would misreport the result.
+    """
     config = json.loads(config_path.read_text())
     spec = images.GenerationSpec.from_config(config)
     limit = getattr(args, "prompts", None) or config.get("verify_prompt_count")

@@ -25,6 +25,16 @@ EXPECTED_STAGES = ("preflight", "download", "export", "verify")
 
 
 def check(manifest_path: Path) -> tuple[list[str], list[str]]:
+    """Validate a run manifest, returning errors and warnings separately.
+
+    An error means the manifest cannot support the claims made from it -- no GPU
+    recorded, a stage that failed, a package whose version is unknown. A warning
+    means the run happened but something about it limits what the numbers mean,
+    such as non-Blackwell hardware, where NVFP4 results are not comparable.
+
+    Returns both lists rather than raising, so the caller can print every problem
+    at once. Finding one error at a time in a file this size is its own failure.
+    """
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -99,6 +109,13 @@ def check(manifest_path: Path) -> tuple[list[str], list[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Check a manifest and exit non-zero if it holds errors.
+
+    Locates the manifest from the workspace when no path is given, so it can be
+    run with no arguments after a run. Warnings go to stdout and errors to
+    stderr, which makes this usable as a gate in a script without discarding the
+    advisory half.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "manifest",

@@ -71,6 +71,12 @@ class Pair:
 
 
 def _load_font(size: int, *, bold: bool = True):
+    """First usable font from the candidate list, falling back to PIL's default.
+
+    Font paths differ across the containers and login nodes this runs on, and a
+    figure with ugly default text is still a usable figure. Raising here would
+    lose the whole render over a cosmetic detail.
+    """
     from PIL import ImageFont
 
     for path in FONT_CANDIDATES if bold else FONT_CANDIDATES_REGULAR:
@@ -82,6 +88,12 @@ def _load_font(size: int, *, bold: bool = True):
 
 
 def _load_prompt_text(config_dir: Path) -> dict[str, str]:
+    """Map prompt id to prompt text, or an empty map if there is no prompts file.
+
+    Accepts both the wrapped ``{"prompts": [...]}`` shape and a bare list, since
+    both are in circulation. Absent prompts only cost the figures their captions,
+    so this returns empty rather than failing the render.
+    """
     prompts_file = config_dir / "prompts.json"
     if not prompts_file.is_file():
         return {}
@@ -160,6 +172,13 @@ def _wrap(draw, text: str, font, max_width: int) -> str:
 
 
 def _render_pair(pair: Pair, destination: Path) -> Path:
+    """Draw one BF16/NVFP4 comparison to a PNG and return its path.
+
+    Both panels are resized to the same square, so a composition difference reads
+    as a difference rather than as a layout artefact. Prompt, seed and scores are
+    drawn onto the image because these files get separated from the run that
+    produced them almost immediately.
+    """
     from PIL import Image, ImageDraw
 
     title_font = _load_font(20)
@@ -254,6 +273,17 @@ def _render_contact_sheet(pairs: list[Pair], destination: Path, seed: int | None
 
 
 def main() -> int:
+    """Render side-by-side figures and a contact sheet from a scored image set.
+
+    Reads the image directory's ``metadata.json`` for pairing and ``quality.json``
+    for the per-pair scores, so a figure carries the same numbers as the report
+    rather than a second, separately computed set.
+
+    Licence matters here in a way it does not elsewhere in the harness: figures
+    are the output most likely to be pasted into a document and shared, and
+    ``flux-dev`` images are non-commercial. Generate anything shareable from the
+    ``flux-schnell`` arm.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--images", type=Path, required=True, help="directory of paired renders with metadata.json"

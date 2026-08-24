@@ -123,6 +123,17 @@ def _check_hf_access(repos: list[str]) -> dict[str, Any]:
 
 
 def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
+    """Check the environment and refuse to continue if the run cannot succeed.
+
+    Writes ``results/environment.json`` and returns the GPU architecture, free
+    space and any advisories for the manifest. Depends on no earlier stage.
+
+    Problems raise; advisories only print. That distinction is the whole point of
+    the stage: an allocation is expensive, so a missing token or a full volume
+    should stop the run in the first few seconds rather than four hours into an
+    export, while a node-local workspace is worth saying out loud and not worth
+    blocking on.
+    """
     config = json.loads(config_path.read_text())
     problems: list[str] = []
     advisories: list[str] = []

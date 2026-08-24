@@ -234,6 +234,18 @@ def _generate_diffusers(
 
 
 def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
+    """Generate BF16 and dynamic-NVFP4 images from the BF16 baseline.
+
+    Writes both arms into ``images/dynamic`` with the ``metadata.json`` the
+    quality stage pairs on. Needs the download stage and nothing else -- no
+    export, which is the point: dynamic quantization has no calibration step, so
+    this answers the quality question in an hour instead of a full export cycle.
+
+    Both arms are given identical injected latents, and the run aborts if the
+    latent digests disagree for any prompt and seed. Without that check a broken
+    pairing still produces a complete set of plausible numbers, which is the one
+    failure here that cannot be caught by looking at the images.
+    """
     config = json.loads(config_path.read_text())
     spec = images.GenerationSpec.from_config(config)
     limit = getattr(args, "prompts", None) or config.get("dynamic_prompt_count")

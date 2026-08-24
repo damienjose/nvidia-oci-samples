@@ -68,6 +68,17 @@ def describe_quantization(visual_gen: Any) -> dict[str, Any]:
 
 
 def main() -> int:
+    """Time one arm and append the result to the per-model JSON.
+
+    Loads once, discards a warm-up generation, then times the rest and reports
+    the median. The warm-up is not optional: the first generation pays for CUDA
+    context setup, kernel autotuning and allocator growth, and including it makes
+    every arm look slower by an amount that has nothing to do with precision.
+
+    Appends rather than overwrites, since one arm runs per process. The caller
+    owns the file and is responsible for truncating it between runs -- otherwise
+    a second run stacks on the first and the baseline lookup finds a stale record.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", required=True, help="Arm label, e.g. bf16 or nvfp4-static")
     parser.add_argument("--model", required=True, help="Model directory or Hub ID")

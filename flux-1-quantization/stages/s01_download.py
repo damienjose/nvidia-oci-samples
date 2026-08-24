@@ -26,6 +26,13 @@ from common import paths
 
 
 def _snapshot(repo: str, target: Path, *, allow_patterns=None) -> dict[str, Any]:
+    """Download a repo into a real directory rather than the shared HF cache.
+
+    ``local_dir`` gives actual files at a predictable path, which is what the
+    later stages and every documentation example expect. ``allow_patterns`` exists
+    for the published reference, where only the tensors are needed and the rest of
+    the repo is a few more gigabytes for nothing.
+    """
     from huggingface_hub import snapshot_download
 
     print(f"  downloading {repo}")
@@ -39,6 +46,12 @@ def _snapshot(repo: str, target: Path, *, allow_patterns=None) -> dict[str, Any]
 
 
 def _resolved_revision(repo: str) -> str | None:
+    """Resolve a repo to the commit actually downloaded, or None.
+
+    Best-effort by design. Pinning the revision is what makes a run reproducible
+    a month later, but failing to look it up is not a reason to fail a download
+    that has already succeeded.
+    """
     try:
         from huggingface_hub import HfApi
 
@@ -113,6 +126,18 @@ def _directory_size_gb(path: Path) -> float:
 
 
 def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
+    """Fetch the BF16 baseline, and the published NVFP4 reference if configured.
+
+    Populates ``models/`` under the workspace -- or symlinks a copy someone has
+    already staged -- and records each repo with its resolved revision and size,
+    so a run stays reproducible once ``main`` has moved on. Needs a Hugging Face
+    token and nothing else.
+
+    An interrupted pull is discarded rather than resumed into. A partial
+    checkpoint reads as present, so every later stage would either skip it or
+    load half a model, and completeness is therefore re-checked after fetching:
+    a failure here is a failure, not a directory that merely exists.
+    """
     config = json.loads(config_path.read_text())
 
     # Keep the Hugging Face cache inside the workspace. Home directories on

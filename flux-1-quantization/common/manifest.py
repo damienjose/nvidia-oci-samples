@@ -43,6 +43,13 @@ def _utc_now() -> str:
 
 
 def _run(cmd: list[str]) -> str | None:
+    """Run a command and return its stdout, or None if anything went wrong.
+
+    Every failure collapses to None on purpose -- a missing binary, a non-zero
+    exit, a hang past the timeout. This only feeds environment capture, and a
+    field the manifest cannot fill is worth far less than a preflight that dies
+    because ``nvidia-smi`` was absent.
+    """
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):
@@ -52,6 +59,14 @@ def _run(cmd: list[str]) -> str | None:
 
 
 def _package_versions() -> dict[str, str | None]:
+    """Versions of the packages whose behaviour changes the result.
+
+    Read from installed metadata rather than by importing. Importing to test
+    availability is unsafe here: ``tensorrt_llm`` calls MPI_Init at import time,
+    which aborts the process when Open MPI was not built against Slurm's PMI.
+    A package that is absent records None rather than being omitted, so a reader
+    can tell "not installed" from "never checked".
+    """
     try:
         from importlib import metadata
     except ImportError:  # pragma: no cover - Python < 3.8 only
@@ -138,11 +153,29 @@ class Manifest:
     """Append-only record of a run, persisted after every stage."""
 
     def __init__(self, results_dir: Path):
+        """Open, or start, the manifest for a workspace.
+
+        Loads whatever is already there rather than truncating, so a run resumed
+        after an allocation ended keeps the record of the stages that succeeded
+        before it. The environment is captured once, when the manifest is first
+        created, and never refreshed -- it describes the machine the run started
+        on, which is the thing a later reader needs.
+        """
         self.path = results_dir / MANIFEST_NAME
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.data: dict[str, Any] = self._load()
 
     def _load(self) -> dict[str, Any]:
+        """Load the existing manifest, or start a fresh one.
+
+        A file that cannot be parsed is renamed to ``.json.corrupt`` rather than
+        deleted, so the run continues and the wreckage is still there to look at.
+
+        Valid JSON is not necessarily a manifest, so the keys the rest of the class
+        indexes are restored before returning. Without that a file holding ``{}`` --
+        or a manifest truncated to its header -- parses cleanly and then fails with a
+        bare KeyError inside ``record``, after a stage has already done its work.
+        """
         fresh = {"created_at": _utc_now(), "environment": environment(), "stages": []}
         if not self.path.exists():
             return fresh
@@ -178,6 +211,14 @@ class Manifest:
         notes: str | None = None,
         duration_s: float | None = None,
     ) -> None:
+        """Append one stage outcome and persist immediately.
+
+        Appends rather than replaces, so a re-run leaves the earlier attempt in
+        place and the manifest reads as a history rather than a snapshot. Saving
+        on every call is deliberate: the point of the file is to survive the run
+        that was writing it, and a stage that fails after an hour must still have
+        left its record behind.
+        """
         self.data["stages"].append(
             {
                 "stage": stage,
@@ -208,6 +249,12 @@ class Manifest:
         os.replace(tmp, self.path)
 
     def stage_status(self, stage: str) -> str | None:
+        """Status of the most recent attempt at a stage, or None if never run.
+
+        Reversed, because ``record`` appends: a stage that failed and was then
+        re-run successfully must report the success. Iterating forwards would
+        make ``--force`` look like it had never worked.
+        """
         for entry in reversed(self.data["stages"]):
             if entry["stage"] == stage:
                 return entry["status"]

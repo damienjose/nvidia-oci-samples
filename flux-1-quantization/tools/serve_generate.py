@@ -73,6 +73,11 @@ def file_digest(path: Path) -> str:
 
 
 def spec_values(spec: images.GenerationSpec, seed: int) -> dict[str, Any]:
+    """Flatten the spec into the parameter names a VisualGen build expects.
+
+    Kept separate from ``apply_spec`` so the intended values can be recorded
+    against each image even when the build refuses some of them.
+    """
     return {
         "num_inference_steps": spec.steps,
         "height": spec.height,
@@ -103,6 +108,14 @@ def apply_spec(params: Any, spec: images.GenerationSpec, seed: int) -> list[str]
 
 
 def build(model: str, visual_gen_args: str | None) -> Any:
+    """Load a model into a VisualGen engine and report how long it took.
+
+    Omitting ``visual_gen_args`` is how a BF16 arm is requested; passing a YAML is
+    how a quantized one is. The YAML must not carry a ``quant_config``, or
+    VisualGen takes its own path, defaults ``dynamic`` to true and re-quantizes at
+    load time -- scoring the runtime-quantized model while appearing to score the
+    checkpoint.
+    """
     from tensorrt_llm import VisualGen, VisualGenArgs
 
     extra = VisualGenArgs.from_yaml(visual_gen_args) if visual_gen_args else None
@@ -163,6 +176,17 @@ def merge_metadata(path: Path, spec: images.GenerationSpec,
 
 
 def main() -> int:
+    """Generate one arm's images through VisualGen and append its metadata.
+
+    One arm per invocation, into a directory shared with the other arms, because
+    VisualGen holds a model resident and two pipelines in one process would
+    contend for the GPU. Each run merges its records into the directory's
+    ``metadata.json`` so the quality stage sees a complete pair set.
+
+    Pairing here is by seed only. VisualGen derives its own latents rather than
+    accepting injected ones, so per-image PSNR is weaker evidence than in the
+    simulated arms -- which is why the metadata records which pairing was used.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arm", required=True, help="Arm label, e.g. bf16 or nvfp4-static-served")
     parser.add_argument("--model", required=True, help="Model directory")
