@@ -172,3 +172,51 @@ make preflight
 ```
 
 Preflight fails loudly on anything that would stop a later stage: no GPU, insufficient disk, missing `torch`, no Hugging Face token, an unaccepted licence. It also warns when the workspace looks node-local, which matters because node-local storage is normally wiped when the allocation ends.
+
+## Inside the container, on a shared cluster
+
+Container runtimes normally mount your home directory and inherit the environment of the shell that started them. Both are convenient and both cause failures whose error messages point somewhere other than the cause. Set these before running anything:
+
+```bash
+# Ignore ~/.local/lib/pythonX.Y/site-packages
+export PYTHONNOUSERSITE=1
+
+# Drop the scheduler variables the container inherited
+unset $(env | awk -F= '/^(SLURM_|PMI_|PMIX_)/ {print $1}')
+```
+
+**Why the first one.** Python puts `~/.local/lib/pythonX.Y/site-packages` ahead of the container's own packages. If you have ever run `pip install --user torch` on the login node, that copy wins, and its compiled extension does not match the rest of the container:
+
+```
+ImportError: cannot import name '_is_kineto_stopped' from 'torch._C._autograd'
+  (/home/<user>/.local/lib/python3.12/site-packages/torch/_C.cpython-312-...so)
+```
+
+The path in the message is the diagnosis. Confirm you are on the container's build with `python3 -c 'import torch; print(torch.__file__)'` — you want a path under `/usr/local`, not one under your home directory.
+
+**Why the second one.** Open MPI checks for scheduler variables at import time. Finding them, it concludes it was launched under `srun` and reaches for a PMI it was not built against, so `import tensorrt_llm` aborts the process:
+
+```
+OPAL ERROR: Unreachable in file pmix3x_client.c at line 111
+The application appears to have been direct launched using "srun",
+but OMPI was not built with SLURM's PMI support
+*** An error occurred in MPI_Init_thread
+```
+
+Nothing is wrong with the installation. The container simply inherited variables describing a job it is not part of.
+
+**Environment does not survive shell transitions.** A new `tmux` session, a nested `bash`, and the container itself each start clean. Export `FLUX_QUANT_WORKSPACE`, `HF_HOME`, `CMMD_REPO` and the two settings above *inside* the shell that will run the stages, not in the one you launched it from.
+
+**Node-local scratch is not always where you expect.** Container runtimes want a writable node-local path for their unpacked image, and the conventional one is not writable on every node. Find one before you start:
+
+```bash
+for d in /raid /scratch/local /scratch.local /local /tmp; do
+  [ -d "$d" ] || continue
+  if touch "$d/.wtest.$$" 2>/dev/null; then
+    rm -f "$d/.wtest.$$"
+    echo "WRITABLE  $d   $(df -h "$d" | awk 'NR==2{print $4}') free"
+  fi
+done
+```
+
+Unpack the image node-local rather than onto shared scratch. It is several hundred thousand small files, and every import walks them.
