@@ -1,0 +1,37 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+results/
+models/
+exports/
+images/
+# Re-include the curated README examples. The directory has to be un-excluded
+# before the file pattern below can fire: git does not descend into an ignored
+# directory, so a negation for a file inside one never matches. These are
+# flux-schnell output, Apache-2.0 and publishable -- see docs/images/*.license.
+!docs/images/
+*.safetensors
+*.pt
+*.png
+!docs/images/*.png
+*.jpg
+*.jpeg
+*.nsys-rep
+*.sqlite
+*.log
+*.out
+.ipynb_checkpoints/
+*.docx
+
+# Comparison figures. This repository is public and FLUX.1-dev output is under a
+# non-commercial licence, so dev-arm images must not be pushed. Rebuild with
+# `make figures`; use the Apache-2.0 flux-schnell arm for anything public.
+docs/figures/
+
+# Site-specific operator runbook. Names an internal cluster, a storage volume,
+# and a capacity reservation, so it stays local. Every finding in it that is
+# transferable to anyone else lives in README.md or INSTALL.md instead.
+RUNBOOK.md
+RUNBOOK.docx

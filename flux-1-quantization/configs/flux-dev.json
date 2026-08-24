@@ -1,0 +1,42 @@
+{
+  "modelopt_model": "flux-dev",
+  "baseline_repo": "black-forest-labs/FLUX.1-dev",
+  "baseline_dir": "FLUX.1-dev",
+  "reference_repo": "black-forest-labs/FLUX.1-dev-NVFP4",
+  "reference_dir": "FLUX.1-dev-NVFP4",
+  "reference_patterns": ["*.safetensors", "*.json"],
+  "reference_note": "Published NVFP4 checkpoint in ComfyUI format. Used for schema comparison only; it does not load into TRT-LLM VisualGen, which reads Diffusers format.",
+  "serving_container": "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc22",
+  "prompts_file": "configs/prompts.json",
+  "dynamic_prompt_count": 8,
+  "verify_prompt_count": 4,
+  "generation": {
+    "height": 1024,
+    "width": 1024,
+    "steps": 50,
+    "guidance_scale": 3.5,
+    "max_sequence_length": 512,
+    "seeds": [42, 31415, 7],
+    "seeds_note": "Three seeds per prompt. The counts above are deliberately small for a first run: 8 dynamic prompts gives 24 pairs, 4 verify prompts gives 12. Published figures used --prompts 16, which is 48 matched pairs. Do not read a control at 8 pairs as meaningful -- at that size the same-precision control scored worse than the measurement, meaning CMMD was reading seed variation rather than quantization.",
+    "steps_note": "50 steps is a common production setting for FLUX.1-dev. Step count dominates latency, so match it to the deployment being evaluated."
+  },
+  "quantization": {
+    "model_dtype": "BFloat16",
+    "format": "fp4",
+    "batch_size": 2,
+    "calib_size": 128,
+    "calib_steps": 20,
+    "collect_method": "default",
+    "quantize_mha": true,
+    "quant_algo": null,
+    "quant_algo_note": "Leave null for max-calibration PTQ. Set to 'svdquant' only if PTQ misses the quality bar."
+  },
+  "scope": {
+    "transformer": "NVFP4 weights and activations, except the layers Model Optimizer protects",
+    "attention": "FP8 when --quantize-mha is set and head dimension divides by 16",
+    "text_encoders": "BF16",
+    "vae": "BF16",
+    "accumulator": "BF16",
+    "note": "The pipeline is mixed precision, not 4-bit throughout. This is also why halving the weight precision does not halve the runtime."
+  }
+}
