@@ -106,6 +106,13 @@ def check(manifest_path: Path) -> tuple[list[str], list[str]]:
             errors.append(f"stages[{index}] is not an object: found {type(entry).__name__}")
         elif "stage" not in entry:
             errors.append(f"stages[{index}] has no 'stage' field")
+        elif not isinstance(entry["stage"], str):
+            # Used as a dictionary key below, so a list or dict here raises
+            # ``unhashable type`` and stops the run before the remaining checks
+            # report anything.
+            errors.append(
+                f"stages[{index}].stage is not a string: found {type(entry['stage']).__name__}"
+            )
         else:
             stages[entry["stage"]] = entry
 
@@ -122,7 +129,13 @@ def check(manifest_path: Path) -> tuple[list[str], list[str]]:
     download = download_entry.get("outputs") or {}
     if not isinstance(download, dict):
         download = {}
-    for record in download.get("downloads", []):
+    # Iterated below, so a scalar here raises ``not iterable``. Degrade to an
+    # empty list and report it, rather than losing every check that follows.
+    records = download.get("downloads", [])
+    if not isinstance(records, list):
+        errors.append(f"download.downloads is not a list: found {type(records).__name__}")
+        records = []
+    for record in records:
         if not isinstance(record, dict):
             errors.append(f"A download record is not an object: found {type(record).__name__}")
             continue

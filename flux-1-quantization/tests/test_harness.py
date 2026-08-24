@@ -247,6 +247,38 @@ class TestManifest(unittest.TestCase):
             manifest.record("quality", status="ok")
             self.assertEqual(Manifest(results).stage_status("quality"), "ok")
 
+    def test_stage_entries_with_wrongly_typed_fields_are_dropped(self):
+        """Presence is not enough: the field types are what later code relies on.
+
+        ``stage`` becomes a dictionary key in the validator, so a list there is
+        unhashable; ``status`` is read positionally by ``stage_status``, so an
+        entry naming a stage and carrying no status raises KeyError on resume.
+        Both survived a presence-only filter.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            (results / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "environment": {},
+                        "stages": [
+                            {"stage": [], "status": "ok"},
+                            {"stage": "export"},
+                            {"stage": "verify", "status": 0},
+                            {"stage": "quality", "status": "ok"},
+                        ],
+                    }
+                )
+            )
+            manifest = Manifest(results)
+            self.assertEqual(
+                [entry["stage"] for entry in manifest.data["stages"]], ["quality"]
+            )
+            # The one well-formed entry is untouched, and the dropped ones do
+            # not resurface as an exception when they are read back.
+            self.assertEqual(manifest.stage_status("quality"), "ok")
+            self.assertIsNone(manifest.stage_status("export"))
+
 
 class TestConfigs(unittest.TestCase):
     def _configs(self):
@@ -410,6 +442,31 @@ class TestManifestValidator(unittest.TestCase):
             self.assertTrue(any("stages[0] is not an object" in e for e in errors))
             self.assertTrue(any("stages[1] has no 'stage' field" in e for e in errors))
             self.assertTrue(any("never run" in w for w in warnings))
+
+    def test_non_string_stage_name_is_reported_not_raised(self):
+        """The name is used as a dictionary key, so an unhashable one stops the run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(
+                Path(tmp), {"environment": "broken", "stages": [{"stage": [], "status": "ok"}]}
+            )
+            errors, _ = check_run_manifest.check(path)
+            self.assertTrue(any("stages[0].stage is not a string" in e for e in errors))
+            # The checks after the stage loop still ran.
+            self.assertTrue(any("No GPU" in e for e in errors))
+
+    def test_downloads_not_a_list_is_reported_not_raised(self):
+        """A scalar here was iterated directly, which ended the validation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(
+                Path(tmp),
+                {
+                    "environment": "broken",
+                    "stages": [{"stage": "download", "status": "ok", "outputs": {"downloads": 1}}],
+                },
+            )
+            errors, _ = check_run_manifest.check(path)
+            self.assertTrue(any("download.downloads is not a list" in e for e in errors))
+            self.assertTrue(any("No GPU" in e for e in errors))
 
 
 class TestSchemaClassification(unittest.TestCase):

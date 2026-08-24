@@ -210,10 +210,18 @@ class Manifest:
         # Malformed entries are dropped rather than raised on. A manifest that is
         # partly readable is still worth resuming from, and the alternative --
         # refusing to load -- costs the record of every stage that did succeed.
+        # The field types matter as much as their presence. ``stage`` is used as
+        # a dict key by the validator, so a list there is unhashable; ``status``
+        # is read positionally by ``stage_status``, so an entry naming a stage
+        # and carrying no status raises KeyError on the next resume.
         loaded["stages"] = [
             entry
             for entry in loaded["stages"]
-            if isinstance(entry, dict) and "stage" in entry
+            if (
+                isinstance(entry, dict)
+                and isinstance(entry.get("stage"), str)
+                and isinstance(entry.get("status"), str)
+            )
         ]
         return loaded
 
