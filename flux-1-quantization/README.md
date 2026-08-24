@@ -236,7 +236,7 @@ Outputs are per-person, because the stages write to fixed paths and two people r
 
 Create a `models` directory beside the per-person workspaces and the harness finds it on its own:
 
-```
+```text
 /mnt/shared/<team>/
     flux-1-quantization/      the harness, one shared copy
     models/                   shared checkpoints, downloaded once
@@ -285,7 +285,7 @@ See [INSTALL.md](INSTALL.md) for the overlay steps.
 
 Everything lands under the workspace:
 
-```
+```text
 models/                          downloaded checkpoints, revisions pinned
 exports/<export_dir>/torch/      backbone.pt — restore in PyTorch with mto.restore
 exports/<export_dir>/hf/         Hugging Face export for SGLang, vLLM, TRT-LLM

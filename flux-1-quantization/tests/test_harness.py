@@ -213,6 +213,40 @@ class TestManifest(unittest.TestCase):
             Manifest(results)
             self.assertTrue((results / "run_manifest.json.corrupt").exists())
 
+    def test_non_dict_environment_is_replaced_not_preserved(self):
+        """Keeping a string here breaks a resumed run several stages later."""
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            (results / "run_manifest.json").write_text(
+                json.dumps({"environment": "broken", "stages": []})
+            )
+            manifest = Manifest(results)
+            self.assertIsInstance(manifest.data["environment"], dict)
+            self.assertIn("hostname", manifest.data["environment"])
+
+    def test_malformed_stage_entries_are_dropped_not_raised_on(self):
+        """A partly readable manifest is still worth resuming from."""
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            (results / "run_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "environment": {},
+                        "stages": [
+                            "not-a-dict",
+                            {"no": "stage key"},
+                            {"stage": "export", "status": "ok"},
+                        ],
+                    }
+                )
+            )
+            manifest = Manifest(results)
+            self.assertEqual(len(manifest.data["stages"]), 1)
+            # The survivor is still usable, and recording onto it still works.
+            self.assertEqual(manifest.stage_status("export"), "ok")
+            manifest.record("quality", status="ok")
+            self.assertEqual(Manifest(results).stage_status("quality"), "ok")
+
 
 class TestConfigs(unittest.TestCase):
     def _configs(self):
@@ -312,6 +346,70 @@ class TestManifestValidator(unittest.TestCase):
             )
             errors, _ = check_run_manifest.check(path)
             self.assertTrue(any("export" in e for e in errors))
+
+    # A validator must report on a malformed manifest, never crash on one. Each
+    # of these raised before the type guards went in.
+
+    def test_string_environment_is_reported_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), {"environment": "broken", "stages": []})
+            errors, _ = check_run_manifest.check(path)
+            self.assertTrue(any("environment is not an object" in e for e in errors))
+
+    def test_string_gpu_and_packages_are_reported_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(
+                Path(tmp),
+                {
+                    "environment": {
+                        "hostname": "n",
+                        "cpu_arch": "x86_64",
+                        "python": "3.12",
+                        "gpu": "nope",
+                        "packages": "nope",
+                    },
+                    "stages": [],
+                },
+            )
+            errors, _ = check_run_manifest.check(path)
+            self.assertTrue(any("environment.gpu is not an object" in e for e in errors))
+            self.assertTrue(any("environment.packages is not an object" in e for e in errors))
+
+    def test_non_dict_stage_entry_is_reported_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), {"environment": {}, "stages": ["not-a-dict"]})
+            errors, _ = check_run_manifest.check(path)
+            self.assertTrue(any("stages[0] is not an object" in e for e in errors))
+
+    def test_stage_entry_without_a_stage_field_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), {"environment": {}, "stages": [{"status": "ok"}]})
+            errors, _ = check_run_manifest.check(path)
+            self.assertTrue(any("has no 'stage' field" in e for e in errors))
+
+    def test_stage_entry_without_a_status_is_not_read_as_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), {"environment": {}, "stages": [{"stage": "export"}]})
+            errors, _ = check_run_manifest.check(path)
+            self.assertTrue(any("export" in e and "None" in e for e in errors))
+
+    def test_stages_not_a_list_is_reported_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), {"environment": {}, "stages": "nope"})
+            errors, _ = check_run_manifest.check(path)
+            self.assertTrue(any("stages is not a list" in e for e in errors))
+
+    def test_every_check_still_runs_after_a_bad_shape(self):
+        """The point of returning errors rather than raising: one run, every problem."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), {"environment": "broken", "stages": ["not-a-dict", {}]})
+            errors, warnings = check_run_manifest.check(path)
+            self.assertTrue(any("environment is not an object" in e for e in errors))
+            self.assertTrue(any("No GPU" in e for e in errors))
+            self.assertTrue(any("No version recorded for torch" in e for e in errors))
+            self.assertTrue(any("stages[0] is not an object" in e for e in errors))
+            self.assertTrue(any("stages[1] has no 'stage' field" in e for e in errors))
+            self.assertTrue(any("never run" in w for w in warnings))
 
 
 class TestSchemaClassification(unittest.TestCase):

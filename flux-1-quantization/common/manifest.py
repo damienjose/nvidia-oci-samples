@@ -199,6 +199,22 @@ class Manifest:
             loaded.setdefault(key, default)
         if not isinstance(loaded["stages"], list):
             loaded["stages"] = []
+
+        # Present is not the same as usable. The keys above can hold anything
+        # JSON can express, and a resumed run indexes into both of them --
+        # ``stage_status`` reads ``entry["stage"]`` and the validator reads
+        # ``environment["gpu"]``. Preserving a string where a dict belongs turns
+        # a readable manifest into an AttributeError several stages later.
+        if not isinstance(loaded["environment"], dict):
+            loaded["environment"] = environment()
+        # Malformed entries are dropped rather than raised on. A manifest that is
+        # partly readable is still worth resuming from, and the alternative --
+        # refusing to load -- costs the record of every stage that did succeed.
+        loaded["stages"] = [
+            entry
+            for entry in loaded["stages"]
+            if isinstance(entry, dict) and "stage" in entry
+        ]
         return loaded
 
     def record(

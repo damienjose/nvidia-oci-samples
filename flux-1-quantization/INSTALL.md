@@ -187,7 +187,7 @@ unset $(env | awk -F= '/^(SLURM_|PMI_|PMIX_)/ {print $1}')
 
 **Why the first one.** Python puts `~/.local/lib/pythonX.Y/site-packages` ahead of the container's own packages. If you have ever run `pip install --user torch` on the login node, that copy wins, and its compiled extension does not match the rest of the container:
 
-```
+```text
 ImportError: cannot import name '_is_kineto_stopped' from 'torch._C._autograd'
   (/home/<user>/.local/lib/python3.12/site-packages/torch/_C.cpython-312-...so)
 ```
@@ -196,7 +196,7 @@ The path in the message is the diagnosis. Confirm you are on the container's bui
 
 **Why the second one.** Open MPI checks for scheduler variables at import time. Finding them, it concludes it was launched under `srun` and reaches for a PMI it was not built against, so `import tensorrt_llm` aborts the process:
 
-```
+```text
 OPAL ERROR: Unreachable in file pmix3x_client.c at line 111
 The application appears to have been direct launched using "srun",
 but OMPI was not built with SLURM's PMI support
