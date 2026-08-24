@@ -154,7 +154,7 @@ FLUX.1 checkpoints are gated. Both steps are required, and this is the most comm
 2. Authenticate:
 
 ```bash
-huggingface-cli login          # or: export HF_TOKEN=hf_...
+hf auth login                  # or: export HF_TOKEN=hf_...
 ```
 
 Point the cache at the workspace, since a 34 GB model will not fit in a home directory:

@@ -206,6 +206,11 @@ bench() {  # bench <out-json> <name> <model> <steps> <guidance> [extra args...]
 
 run_flux_dev() {
   local out="$RESULTS/serving-bench-flux-dev.json"
+  # bench_serving.py only ever appends. Without this a re-run stacks the new
+  # arms on top of the previous run's, and the summary's baseline lookup takes
+  # the *first* matching bf16 record -- one measured against a possibly
+  # different driver, checkpoint or export.
+  rm -f "$out"
   echo "=============================================================="
   echo " flux-dev, 50 steps - precision held against a constant model"
   echo "=============================================================="
@@ -221,6 +226,9 @@ run_flux_dev() {
 
 run_flux_schnell() {
   local out="$RESULTS/serving-bench-flux-schnell.json"
+  # Same reason as flux-dev. The devfilter load-check writes its own file and
+  # accumulates identically, so it is reset here too.
+  rm -f "$out" "$RESULTS/serving-loadcheck.json"
   echo
   echo "=============================================================="
   echo " flux-schnell, 4 steps - the Apache-2.0 arm"

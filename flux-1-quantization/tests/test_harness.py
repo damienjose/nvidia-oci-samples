@@ -92,23 +92,53 @@ class TestWorkspace(unittest.TestCase):
 class TestSharedModels(unittest.TestCase):
     """Checkpoints are shared across a team; outputs are not."""
 
+    def setUp(self):
+        # paths.resolve() consults the real environment, and anyone who has
+        # actually run this harness has FLUX_QUANT_MODELS exported -- INSTALL.md
+        # tells them to. That made these tests pass on a clean machine and fail
+        # on a working one, which is the wrong way round.
+        patcher = mock.patch.dict(os.environ, {}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in ("FLUX_QUANT_MODELS", "FLUX_QUANT_WORKSPACE", "FLUX_QUANT_SHARED_CACHES"):
+            os.environ.pop(name, None)
+
+    @staticmethod
+    def _tmp_root(tmp: str) -> Path:
+        """Resolve the temporary directory before building paths from it.
+
+        ``_shared_models_root`` resolves internally, and it has to: on the
+        cluster a workspace is frequently reached through a symlinked scratch
+        volume, and the parent walk only finds ``models/`` on the real path. So
+        it returns a resolved path, and any assertion comparing against one
+        built here must start from a resolved path too.
+
+        On macOS this is the difference between passing and failing. ``tempfile``
+        hands back ``/var/folders/...`` and ``/var`` is a symlink to
+        ``/private/var``, so the resolved and unresolved forms differ. Linux has
+        no such symlink, which is why this only ever failed on a laptop.
+        """
+        return Path(tmp).resolve()
+
     def test_models_default_to_the_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
-            workspace = paths.resolve(tmp)
-            self.assertEqual(workspace.models, Path(tmp) / "models")
+            root = self._tmp_root(tmp)
+            workspace = paths.resolve(str(root))
+            self.assertEqual(workspace.models, root / "models")
             self.assertEqual(workspace.models_source, "workspace")
 
     def test_explicit_models_dir_wins(self):
         with tempfile.TemporaryDirectory() as tmp:
-            shared = Path(tmp) / "elsewhere"
-            workspace = paths.resolve(tmp, models_dir=str(shared))
+            root = self._tmp_root(tmp)
+            shared = root / "elsewhere"
+            workspace = paths.resolve(str(root), models_dir=str(shared))
             self.assertEqual(workspace.models, shared)
             self.assertEqual(workspace.models_source, "--models-dir")
 
     def test_shared_volume_models_are_found_when_they_exist(self):
         # Mirrors the real layout: /home/scratch.<team>/{models,<user>/flux-quant}
         with tempfile.TemporaryDirectory() as tmp:
-            volume = Path(tmp) / "scratch.example_team"
+            volume = self._tmp_root(tmp) / "scratch.example_team"
             shared = volume / "models"
             shared.mkdir(parents=True)
             workspace_root = volume / "someone" / "flux-quant"
@@ -119,7 +149,7 @@ class TestSharedModels(unittest.TestCase):
     def test_shared_volume_is_ignored_until_the_directory_exists(self):
         # Opting in is a single mkdir; without it we must not invent a path.
         with tempfile.TemporaryDirectory() as tmp:
-            volume = Path(tmp) / "scratch.example_team"
+            volume = self._tmp_root(tmp) / "scratch.example_team"
             workspace_root = volume / "someone" / "flux-quant"
             workspace_root.mkdir(parents=True)
 
@@ -127,14 +157,35 @@ class TestSharedModels(unittest.TestCase):
 
     def test_non_scratch_paths_do_not_get_a_shared_root(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "plain" / "workspace"
+            root = self._tmp_root(tmp) / "plain" / "workspace"
             root.mkdir(parents=True)
             self.assertIsNone(paths._shared_models_root(root))
 
+    def test_shared_volume_is_found_through_a_symlink(self):
+        """The macOS failure, reproduced deliberately so it cannot come back.
+
+        A symlinked path to a scratch volume is the normal case on the cluster,
+        not an edge case, and it is the exact shape that broke this suite on a
+        laptop while passing in CI.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            real = self._tmp_root(tmp) / "real"
+            volume = real / "scratch.example_team"
+            shared = volume / "models"
+            shared.mkdir(parents=True)
+            (volume / "someone" / "flux-quant").mkdir(parents=True)
+
+            link = self._tmp_root(tmp) / "link"
+            link.symlink_to(real, target_is_directory=True)
+
+            via_link = link / "scratch.example_team" / "someone" / "flux-quant"
+            self.assertEqual(paths._shared_models_root(via_link), shared)
+
     def test_ensure_creates_the_shared_models_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
-            shared = Path(tmp) / "shared-models"
-            workspace = paths.resolve(str(Path(tmp) / "ws"), models_dir=str(shared))
+            root = self._tmp_root(tmp)
+            shared = root / "shared-models"
+            workspace = paths.resolve(str(root / "ws"), models_dir=str(shared))
             workspace.ensure()
             self.assertTrue(shared.is_dir())
             self.assertTrue(workspace.exports.is_dir())

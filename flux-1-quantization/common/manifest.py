@@ -143,14 +143,30 @@ class Manifest:
         self.data: dict[str, Any] = self._load()
 
     def _load(self) -> dict[str, Any]:
-        if self.path.exists():
-            try:
-                return json.loads(self.path.read_text())
-            except json.JSONDecodeError:
-                # A corrupt manifest should not block a run. Keep the old file
-                # so it can be inspected, and start a fresh one.
-                self.path.rename(self.path.with_suffix(".json.corrupt"))
-        return {"created_at": _utc_now(), "environment": environment(), "stages": []}
+        fresh = {"created_at": _utc_now(), "environment": environment(), "stages": []}
+        if not self.path.exists():
+            return fresh
+
+        try:
+            loaded = json.loads(self.path.read_text())
+        except json.JSONDecodeError:
+            # A corrupt manifest should not block a run. Keep the old file
+            # so it can be inspected, and start a fresh one.
+            self.path.rename(self.path.with_suffix(".json.corrupt"))
+            return fresh
+
+        # Valid JSON is not necessarily a manifest. A file holding `{}`, a list,
+        # or a manifest truncated to its header parses cleanly and then fails
+        # much later with a bare KeyError inside record() -- after a stage has
+        # already done its work. Restore the keys the rest of the class assumes.
+        if not isinstance(loaded, dict):
+            self.path.rename(self.path.with_suffix(".json.corrupt"))
+            return fresh
+        for key, default in fresh.items():
+            loaded.setdefault(key, default)
+        if not isinstance(loaded["stages"], list):
+            loaded["stages"] = []
+        return loaded
 
     def record(
         self,

@@ -79,8 +79,20 @@ def _check_hf_access(repos: list[str]) -> dict[str, Any]:
         or os.environ.get("HUGGING_FACE_HUB_TOKEN")
         or os.environ.get("HUGGINGFACE_TOKEN")
     )
-    token_file = Path.home() / ".cache" / "huggingface" / "token"
+    # Resolve the stored-token path the way huggingface_hub does, rather than
+    # assuming the default. This harness deliberately relocates HF_HOME into the
+    # workspace, so ~/.cache/huggingface/token is the one place the token
+    # frequently is *not*. Hardcoding it fails preflight for a user who is in
+    # fact logged in.
+    if os.environ.get("HF_TOKEN_PATH"):
+        token_file = Path(os.environ["HF_TOKEN_PATH"])
+    elif os.environ.get("HF_HOME"):
+        token_file = Path(os.environ["HF_HOME"]) / "token"
+    else:
+        cache_home = os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
+        token_file = Path(cache_home) / "huggingface" / "token"
     result["token_present"] = bool(token) or token_file.exists()
+    result["token_file"] = str(token_file)
 
     try:
         from huggingface_hub import HfApi
@@ -153,7 +165,7 @@ def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
     hf = _check_hf_access(repos)
     if not hf["token_present"]:
         problems.append(
-            "No Hugging Face token found. Run `huggingface-cli login` or set HF_TOKEN. "
+            "No Hugging Face token found. Run `hf auth login` or set HF_TOKEN. "
             "FLUX.1 checkpoints are gated."
         )
     for repo, state in hf.get("repos", {}).items():

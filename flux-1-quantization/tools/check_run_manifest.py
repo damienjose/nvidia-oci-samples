@@ -31,7 +31,15 @@ def check(manifest_path: Path) -> tuple[list[str], list[str]]:
     if not manifest_path.exists():
         return [f"No manifest at {manifest_path}"], []
 
-    data = json.loads(manifest_path.read_text())
+    # A corrupt manifest is one of the things this tool exists to report, so it
+    # should come back as an error alongside the others rather than as a
+    # traceback that stops the remaining checks from running at all.
+    try:
+        data = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError) as error:
+        return [f"Manifest at {manifest_path} is unreadable: {error}"], []
+    if not isinstance(data, dict):
+        return [f"Manifest at {manifest_path} is not an object: found {type(data).__name__}"], []
 
     environment = data.get("environment", {})
     for field in REQUIRED_ENVIRONMENT:
@@ -43,7 +51,11 @@ def check(manifest_path: Path) -> tuple[list[str], list[str]]:
         errors.append("No GPU recorded. Results cannot be attributed to hardware.")
     else:
         architectures = gpu.get("architecture") or []
-        if not any(str(a).startswith("10.") for a in architectures):
+        # Blackwell is not one compute capability. Data-centre parts report
+        # 10.x -- sm_100 on B200, sm_103 on GB300 -- and consumer Blackwell
+        # reports 12.x (sm_120). Matching only "10." warned falsely on hardware
+        # that runs NVFP4 perfectly well.
+        if not any(str(a).startswith(("10.", "12.")) for a in architectures):
             warnings.append(
                 f"GPU architecture {architectures} is not Blackwell. NVFP4 results are "
                 "only meaningful on Blackwell."

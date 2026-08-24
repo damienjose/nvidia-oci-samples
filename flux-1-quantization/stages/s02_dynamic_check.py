@@ -39,10 +39,19 @@ def _weight_fingerprint(module) -> tuple:
     Used to prove quantization actually took effect. A silent no-op produces
     two identical image sets, which looks like a flawless result rather than a
     failed one -- the worst way for this to go wrong.
+
+    Restricted to parameters quantization can actually change, and not
+    truncated. Sampling the first N parameters lands almost entirely in the
+    embedders and normalisation layers at the front of the module -- exactly the
+    layers the exclusion filter protects -- so the fingerprint would compare
+    equal on a perfectly successful run and report a no-op that did not happen.
+    Matrices of rank 2 or higher are the Linear weights the recipe converts;
+    1-D norms and biases stay at BF16 either way and only add noise.
     """
     return tuple(
         (name, str(param.dtype), type(param).__name__)
-        for name, param in list(module.named_parameters())[:32]
+        for name, param in module.named_parameters()
+        if param.ndim >= 2
     )
 
 

@@ -63,6 +63,11 @@ class Pair:
     psnr_db: float | None
     clip_delta: float | None
     latent_digest: str | None
+    # Which NVFP4 arm the right-hand panel came from. A figure labelled only
+    # "NVFP4" is ambiguous the moment a run holds more than one arm -- a served
+    # checkpoint and a simulated one look identical on the page and mean
+    # different things.
+    arm: str = "nvfp4"
 
 
 def _load_font(size: int, *, bold: bool = True):
@@ -139,6 +144,7 @@ def _collect_pairs(images_dir: Path, results_dir: Path, config_dir: Path) -> lis
                 psnr_db=score.get("psnr_db"),
                 clip_delta=score.get("clip_delta"),
                 latent_digest=baseline.get("latent_sha256_16"),
+                arm=quantized_name,
             )
         )
     return pairs
@@ -186,7 +192,10 @@ def _render_pair(pair: Pair, destination: Path) -> Path:
         metrics.append(f"PSNR {pair.psnr_db:.2f} dB")
     if pair.clip_delta is not None:
         metrics.append(f"CLIP {pair.clip_delta:+.2f}")
-    right_label = "NVFP4" + ("   " + "   ".join(metrics) if metrics else "")
+    # Name the arm, so a sheet is still readable once separated from the run
+    # that produced it.
+    arm_label = (pair.arm or "nvfp4").replace("nvfp4-", "NVFP4 ").replace("nvfp4", "NVFP4")
+    right_label = arm_label + ("   " + "   ".join(metrics) if metrics else "")
     draw.text((MARGIN + PANEL + GUTTER, label_y), right_label, fill="#111111", font=label_font)
 
     draw.rectangle(

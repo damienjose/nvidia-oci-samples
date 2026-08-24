@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -206,7 +207,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
-    workspace.ensure()
+    try:
+        workspace.ensure()
+    except OSError as error:
+        # A full volume, a read-only mount or a stale NFS handle all land here.
+        # Uncaught this printed a traceback that buried the one line worth
+        # reading, on the first thing the tool does.
+        print(f"error: cannot create the workspace at {workspace.root}: {error}", file=sys.stderr)
+        return 2
+
+    # Before any stage imports huggingface_hub. The library reads HF_HOME once,
+    # at import time, into module-level constants -- so setting it inside the
+    # download stage is too late whenever preflight has already run in the same
+    # process, and a 34 GB checkpoint lands in the home directory instead of the
+    # workspace. Home directories on shared clusters cannot hold it.
+    os.environ.setdefault("HF_HOME", str(workspace.hf_home))
+
     print(f"Workspace: {workspace.root}  ({workspace.source}, {workspace.free_gb:.0f} GB free)")
     print(f"Models:    {workspace.models}  ({workspace.models_source})")
     for warning in workspace.warnings():

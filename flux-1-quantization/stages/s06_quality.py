@@ -34,6 +34,7 @@ front of one.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -42,6 +43,10 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+
+from common import images
+
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 
 BF16_ARM = "bf16"
 # ``-sim`` is mto.restore: NVFP4 numerics on BF16 storage, right for quality and
@@ -141,44 +146,24 @@ def _find_cmmd_repo(workspace_root: Path) -> Path | None:
     return None
 
 
-def _cmmd(image_dir: Path, records: list[dict[str, Any]], workspace_root: Path) -> dict[str, Any]:
-    """CMMD between the BF16 and NVFP4 image sets.
+def _finite(value: Any) -> Any:
+    """Replace non-finite floats with None, recursively.
 
-    Returns a result dict rather than a bare float so a skipped metric is
-    visible and explained. A missing metric is recoverable; a silently wrong
-    one is not, so we never substitute an approximation.
-
-    The upstream tool compares two directories, so the paired images are split
-    into two by symlink first.
+    NaN and +/-Infinity are valid Python floats and invalid JSON. Identical
+    images give an infinite PSNR, so this is reachable on a good run, not only
+    a broken one.
     """
-    repo = _find_cmmd_repo(workspace_root)
-    if repo is None:
-        return {
-            "value": None,
-            "reason": "cmmd-pytorch not found. It is a script repo, not a pip package: "
-            "git clone https://github.com/sayakpaul/cmmd-pytorch.git and set CMMD_REPO.",
-        }
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _finite(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_finite(v) for v in value]
+    return value
 
-    staging = image_dir / "_cmmd"
-    reference, candidate = staging / "bf16", staging / "nvfp4"
-    for directory in (reference, candidate):
-        if directory.exists():
-            shutil.rmtree(directory)
-        directory.mkdir(parents=True)
 
-    counts = {"bf16": 0, "nvfp4": 0}
-    for record in records:
-        source = (image_dir / record["file"]).resolve()
-        if record["arm"] == BF16_ARM:
-            (reference / record["file"]).symlink_to(source)
-            counts["bf16"] += 1
-        elif record["arm"] in NVFP4_ARMS:
-            (candidate / record["file"]).symlink_to(source)
-            counts["nvfp4"] += 1
-
-    if not counts["bf16"] or not counts["nvfp4"]:
-        return {"value": None, "reason": f"need both arms, have {counts}"}
-
+def _cmmd_one(repo: Path, reference: Path, candidate: Path, counts: dict[str, int]) -> dict[str, Any]:
+    """Run the upstream tool over one BF16/NVFP4 directory pair."""
     try:
         completed = subprocess.run(
             [sys.executable, "main.py", str(reference), str(candidate)],
@@ -216,6 +201,78 @@ def _cmmd(image_dir: Path, records: list[dict[str, Any]], workspace_root: Path) 
     }
 
 
+def _cmmd(image_dir: Path, records: list[dict[str, Any]], workspace_root: Path) -> dict[str, Any]:
+    """CMMD between the BF16 and NVFP4 image sets, one score per NVFP4 arm.
+
+    Returns a result dict rather than a bare float so a skipped metric is
+    visible and explained. A missing metric is recoverable; a silently wrong
+    one is not, so we never substitute an approximation.
+
+    The upstream tool compares two directories, so the paired images are split
+    into two by symlink first.
+    """
+    repo = _find_cmmd_repo(workspace_root)
+    if repo is None:
+        return {
+            "value": None,
+            "reason": "cmmd-pytorch not found. It is a script repo, not a pip package: "
+            "git clone https://github.com/sayakpaul/cmmd-pytorch.git and set CMMD_REPO.",
+        }
+
+    staging = image_dir / "_cmmd"
+    if staging.exists():
+        shutil.rmtree(staging)
+
+    reference = staging / "bf16"
+    reference.mkdir(parents=True)
+    bf16_count = 0
+    for record in records:
+        if record["arm"] == BF16_ARM:
+            (reference / record["file"]).symlink_to((image_dir / record["file"]).resolve())
+            bf16_count += 1
+
+    # One candidate directory per NVFP4 arm, never one shared bucket. Merging
+    # them averages a served checkpoint together with a simulated one, or two
+    # different exclusion filters, and reports the mixture as a single number
+    # attributable to none of them -- the precise confusion the separate names
+    # in NVFP4_ARMS exist to prevent. Same-named files across arms would also
+    # collide in one directory and silently drop pairs.
+    per_arm_counts: dict[str, int] = {}
+    for record in records:
+        arm = record["arm"]
+        if arm not in NVFP4_ARMS:
+            continue
+        directory = staging / arm
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / record["file"]).symlink_to((image_dir / record["file"]).resolve())
+        per_arm_counts[arm] = per_arm_counts.get(arm, 0) + 1
+
+    if not bf16_count or not per_arm_counts:
+        counts = {"bf16": bf16_count, **per_arm_counts}
+        return {"value": None, "reason": f"need both arms, have {counts}"}
+
+    scored = {
+        arm: _cmmd_one(repo, reference, staging / arm, {"bf16": bf16_count, arm: count})
+        for arm, count in sorted(per_arm_counts.items())
+    }
+
+    # A single arm is the normal case, and it keeps the flat shape every existing
+    # consumer of quality.json already reads.
+    if len(scored) == 1:
+        arm, only = next(iter(scored.items()))
+        return {**only, "arm": arm}
+
+    return {
+        "value": None,
+        "reason": (
+            f"{len(scored)} NVFP4 arms present ({', '.join(scored)}); scored "
+            "separately in by_arm. One value across arms would mix precisions "
+            "or exclusion filters."
+        ),
+        "by_arm": scored,
+    }
+
+
 def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
     config = json.loads(config_path.read_text())
     image_dir = Path(getattr(args, "images", None) or workspace.images / "dynamic")
@@ -225,7 +282,11 @@ def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
         return {}
 
     metadata, records = _load_pairs(image_dir)
-    prompts = {p["id"]: p for p in json.loads((Path(__file__).resolve().parent.parent / config["prompts_file"]).read_text())["prompts"]}
+    # Through images.load_prompts rather than re-reading the file here. The two
+    # had already drifted: this copy knew nothing about the category-balanced
+    # sampling, so a limited run scored against a different prompt set than the
+    # one that generated the images.
+    prompts = {p["id"]: p for p in images.load_prompts(config, REPOSITORY_ROOT)}
 
     by_key: dict[tuple[str, int], dict[str, dict[str, Any]]] = defaultdict(dict)
     for record in records:
@@ -247,7 +308,12 @@ def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
     import numpy as np
     from PIL import Image
 
-    device = "cuda"
+    # INSTALL.md documents the quality stage as runnable without a GPU, so the
+    # device cannot be assumed. A hardcoded "cuda" turns that into a hard
+    # failure on the CPU-only path this stage is meant to support.
+    import torch
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     per_pair: list[dict[str, Any]] = []
     clip_inputs: list[tuple[str, Path]] = []
 
@@ -351,8 +417,16 @@ def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
             "noise, not signal. Scale to a few dozen before drawing conclusions.",
         )
 
+    # allow_nan=False rather than the default. Python emits NaN and Infinity as
+    # bare literals, which no strict JSON parser accepts -- so a single
+    # non-finite PSNR (identical images give infinite PSNR, and it does happen)
+    # produced a quality.json that the notebook and make_figures both refused to
+    # load. _finite() maps them to null, which every reader already handles
+    # because a missing metric is an expected state here.
     payload = json.dumps(
-        {"summary": summary, "pairs": per_pair, "scored": str(image_dir)}, indent=2
+        _finite({"summary": summary, "pairs": per_pair, "scored": str(image_dir)}),
+        indent=2,
+        allow_nan=False,
     ) + "\n"
 
     # Two copies on purpose. `quality.json` is what the notebook, make_figures and

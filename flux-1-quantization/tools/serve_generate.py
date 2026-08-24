@@ -176,7 +176,15 @@ def main() -> int:
 
     config = json.loads(args.config.read_text())
     spec = images.GenerationSpec.from_config(config)
+    # Before the engine loads. --prompts 0 or a negative value produced an empty
+    # prompt list, and the failure only surfaced after several minutes of model
+    # loading, as an empty output directory with no explanation.
+    if args.prompts is not None and args.prompts < 1:
+        raise SystemExit(f"--prompts must be 1 or more, got {args.prompts}")
+
     prompts = images.load_prompts(config, REPOSITORY_ROOT, limit=args.prompts)
+    if not prompts:
+        raise SystemExit(f"No prompts loaded from {config['prompts_file']}")
     total = len(prompts) * len(spec.seeds)
 
     print(f"  arm {args.arm}: {len(prompts)} prompts x {len(spec.seeds)} seeds = {total} images")

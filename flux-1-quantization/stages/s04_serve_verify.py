@@ -188,7 +188,16 @@ def _try_diffusers_hf(hf_ckpt_dir: Path, spec, prompts, out_dir: Path) -> dict[s
 
     del pipe
     torch.cuda.empty_cache()
-    return {"backend": "diffusers-hf-export", "images": [r["file"] for r in records]}
+    # The records travel with the result, not just their filenames. Returning
+    # only ``images`` left the nvfp4-static-hf arm out of metadata.json, so any
+    # image it produced was on disk but invisible to scoring and to the figures
+    # -- and on the rare run where this path succeeds, that is the arm a reader
+    # would most want to compare.
+    return {
+        "backend": "diffusers-hf-export",
+        "images": [r["file"] for r in records],
+        "records": records,
+    }
 
 
 def _serving_note(hf_ckpt_dir: Path) -> str:
@@ -283,10 +292,18 @@ def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
     # Generate the matching BF16 arm and write metadata, so this directory is a
     # self-contained comparison the quality stage can score on its own.
     baseline_records = _generate_baseline(baseline_dir, spec, prompts, out_dir)
-    images.write_metadata(
-        out_dir / "metadata.json", spec, baseline_records + result["records"]
-    )
-    print(f"  wrote metadata.json covering {len(baseline_records) + len(result['records'])} images")
+
+    # Every arm that actually produced images, not only the documented one. When
+    # the Diffusers path succeeds it writes files into the same directory, and
+    # omitting them from metadata.json left images on disk that scoring and the
+    # figures could not see. Quality scores each NVFP4 arm separately, so an
+    # extra arm here adds a column rather than contaminating one.
+    generated = list(baseline_records)
+    for attempt in attempts:
+        generated.extend(attempt.get("records") or [])
+
+    images.write_metadata(out_dir / "metadata.json", spec, generated)
+    print(f"  wrote metadata.json covering {len(generated)} images")
     print(f"  score it with: python3 quantize.py --stage quality --images {out_dir}")
 
     print(

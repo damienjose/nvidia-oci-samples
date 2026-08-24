@@ -117,8 +117,10 @@ def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
 
     # Keep the Hugging Face cache inside the workspace. Home directories on
     # shared clusters are far too small for a 34 GB model.
+    # Also set in quantize.py before any stage imports huggingface_hub, which is
+    # the one that takes effect on a normal run. Kept here so this stage is still
+    # correct if it is ever driven directly.
     os.environ.setdefault("HF_HOME", str(workspace.hf_home))
-    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
 
     outputs: dict[str, Any] = {"hf_home": str(workspace.hf_home), "downloads": []}
 
@@ -182,11 +184,22 @@ def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
     reference_repo = config.get("reference_repo")
     if reference_repo:
         reference_dir = workspace.models / config["reference_dir"]
-        if reference_dir.exists() and any(reference_dir.iterdir()):
+        # A non-empty directory is not a usable checkpoint. An interrupted
+        # download leaves .incomplete files behind, which satisfied the old test
+        # and then failed much later in the schema diff with no tensors to read.
+        # The reference is fetched with allow_patterns, so it holds no config
+        # files and cannot use _is_complete_checkpoint -- what it needs is at
+        # least one readable safetensors file.
+        if reference_dir.exists() and any(reference_dir.rglob("*.safetensors")):
             print(f"  reference already present at {reference_dir}")
         else:
             # Only the tensors are needed for the schema diff, not the whole repo.
             _snapshot(reference_repo, reference_dir, allow_patterns=config.get("reference_patterns"))
+            if not any(reference_dir.rglob("*.safetensors")):
+                raise RuntimeError(
+                    f"Reference at {reference_dir} holds no .safetensors after fetching. "
+                    "Check reference_patterns in the config."
+                )
         outputs["downloads"].append(
             {
                 "repo": reference_repo,

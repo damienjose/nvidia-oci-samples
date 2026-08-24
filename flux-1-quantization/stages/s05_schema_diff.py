@@ -99,11 +99,21 @@ def _read_headers(directory: Path) -> dict[str, dict[str, Any]]:
         if component.endswith(".safetensors"):
             component = "root"
 
+        file_size = path.stat().st_size
         with path.open("rb") as handle:
             length_bytes = handle.read(8)
             if len(length_bytes) < 8:
                 continue
             header_length = int.from_bytes(length_bytes, "little")
+            # The length is 8 unvalidated bytes from the file. A truncated or
+            # corrupt checkpoint can declare a header larger than the file --
+            # up to 2**64 -- and the read below would try to allocate it. Bound
+            # it by what is actually there before reading a byte.
+            if header_length <= 0 or header_length > file_size - 8:
+                raise RuntimeError(
+                    f"Implausible safetensors header in {path}: declares "
+                    f"{header_length} bytes in a {file_size}-byte file."
+                )
             try:
                 header = json.loads(handle.read(header_length))
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -709,10 +719,12 @@ def run(*, workspace, config_path: Path, manifest, args) -> dict[str, Any]:
         and reference_dir.exists()
         and any(reference_dir.rglob("*.safetensors"))
     )
-    if not have_reference:
-        report["reference"] = None
-        print("\n  no published reference configured for this model — comparison skipped")
-
+    # The no-reference case is handled once, in the else of this branch. It used
+    # to be written twice -- a standalone `if not have_reference` here that set
+    # report["reference"] = None and printed one message, and the else below that
+    # set the same key and printed a different one. Both ran, so the output said
+    # "comparison skipped" and then "reporting our export only" for the same
+    # condition.
     if have_reference:
         theirs = _read_headers(reference_dir)
         their_component = _pick_transformer(theirs)

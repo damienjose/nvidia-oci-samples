@@ -82,7 +82,9 @@ def _share_with_group(root: Path) -> list[str]:
             mode = path.stat().st_mode & 0o777
         except OSError:
             continue
-        wanted = mode | (0o060 if path.is_file() else 0o070)
+        # Read access only. Group write on an export directory lets any group
+        # member replace or unlink the weights.
+        wanted = mode | (0o050 if path.is_dir() else 0o040)
         if wanted != mode:
             try:
                 path.chmod(wanted)
