@@ -7,9 +7,15 @@ results/
 models/
 exports/
 images/
+# Re-include the curated README examples. The directory has to be un-excluded
+# before the file pattern below can fire: git does not descend into an ignored
+# directory, so a negation for a file inside one never matches. These are
+# flux-schnell output, Apache-2.0 and publishable -- see docs/images/*.license.
+!docs/images/
 *.safetensors
 *.pt
 *.png
+!docs/images/*.png
 *.jpg
 *.jpeg
 *.nsys-rep

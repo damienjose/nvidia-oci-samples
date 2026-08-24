@@ -322,6 +322,30 @@ Results are broken out by prompt category, because the failure modes that decide
 
 No metric replaces human review, which is the actual gate in any serious evaluation. The purpose of scoring is to produce something worth putting in front of one.
 
+## What the output actually looks like
+
+Five pairs from the served checkpoint, BF16 left against NVFP4 right, same prompt and seed. Each carries its own PSNR and CLIP delta. All are **FLUX.1-schnell**, which is Apache-2.0; no FLUX.1-dev output appears in this repository, because that model's licence is non-commercial. Rebuild any of this on your own weights with `make figures`.
+
+Text rendering is the first thing to break under aggressive quantization, so it is the first thing to check.
+
+![Text rendering](docs/images/01-text-rendering.png)
+
+![Counting](docs/images/02-counting.png)
+
+![Photography](docs/images/03-photography.png)
+
+Those three are the ordinary case, and the ordinary case is unremarkable. The next two are why this section exists.
+
+![A limb the metric did not object to](docs/images/04-defect-extra-limb.png)
+
+Two bows and a third forearm. The pair scores PSNR 12.75 dB and CLIP −0.78 — poor, but nothing in those numbers says *anatomy*, and a threshold set to catch this would reject a great many acceptable images.
+
+![A finger the metric did not miss](docs/images/05-defect-finger-count.png)
+
+Four fingers where BF16 renders five. This pair scores **PSNR 17.82 dB and CLIP +0.18** — unremarkable and slightly *better* than baseline on text alignment — inside an arm whose CMMD is 0.030, comfortably below a 0.042 seed-variation control. Every number is fine. The hand is not.
+
+That last one is from the arm where the layer-exclusion filter is wrong, which is the point: a single unprotected layer produced a defect no aggregate score reported. **Look at the images.** The scores tell you where to look; they do not tell you what you will find.
+
 ## Paired comparison
 
 Both arms are given the **same injected initial latents**, not merely the same seed. Different runtimes consume the random stream differently, so two stacks handed seed 42 can start from different noise. Latents are generated once on CPU, hashed, and the hash is written into the image metadata so a reviewer can verify the pairing rather than assume it. The `dynamic` stage fails outright if the hashes do not match across arms.
