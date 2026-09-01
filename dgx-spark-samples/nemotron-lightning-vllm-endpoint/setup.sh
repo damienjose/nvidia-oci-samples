@@ -45,11 +45,46 @@ EOF
 fi
 echo "Docker: OK"
 
-# --- 2. client dependencies --------------------------------------------------
+# --- 2. client dependencies, in a virtual environment ------------------------
+#
+# DGX OS ships a PEP 668 "externally managed" Python, so installing into the
+# system interpreter fails by design. A virtual environment is the correct fix.
+# (--break-system-packages would also work and is a bad idea: it can break
+# OS-managed packages on a machine you care about.)
 
-say "Installing client dependencies"
-python3 -m pip install --quiet --upgrade pip
-python3 -m pip install --quiet -r "${SCRIPT_DIR}/requirements.txt"
+say "Setting up the Python environment"
+
+VENV="${VENV_DIR:-${SCRIPT_DIR}/.venv}"
+
+if [[ ! -d "$VENV" ]]; then
+  if ! python3 -m venv "$VENV" 2>/dev/null; then
+    cat <<'EOF'
+
+ERROR: could not create a virtual environment.
+
+On DGX OS / Ubuntu the venv module ships separately:
+
+    sudo apt install -y python3-venv
+
+Then re-run ./setup.sh
+EOF
+    exit 1
+  fi
+  echo "Created $VENV"
+else
+  echo "Reusing $VENV"
+fi
+
+PY="$VENV/bin/python"
+"$PY" -m pip install --quiet --upgrade pip
+"$PY" -m pip install --quiet -r "${SCRIPT_DIR}/requirements.txt"
+
+# Register the environment with Jupyter so demo.ipynb can select it as a kernel.
+"$PY" -m ipykernel install --user \
+  --name dgx-spark-demo --display-name "DGX Spark demo" >/dev/null 2>&1 \
+  && echo "Registered Jupyter kernel: DGX Spark demo" \
+  || echo "NOTE: could not register the Jupyter kernel (ipykernel missing?)"
+
 echo "Done."
 
 # --- 3. container image ------------------------------------------------------
@@ -73,7 +108,7 @@ fi
 # Safe to re-run. We look in the local cache first with local_files_only=True,
 # which needs no network at all: if the weights are already there, this returns
 # immediately and nothing is re-downloaded. Only a cache miss reaches the Hub.
-python3 - "$MODEL" "${MODEL_REVISION:-}" <<'PY'
+"$PY" - "$MODEL" "${MODEL_REVISION:-}" <<'PYEOF'
 import sys, os
 from huggingface_hub import snapshot_download
 from huggingface_hub.utils import LocalEntryNotFoundError
@@ -104,7 +139,7 @@ except LocalEntryNotFoundError:
 
 print("\n  Record that snapshot id alongside any benchmark numbers you publish —")
 print("  it is what makes them reproducible.")
-PY
+PYEOF
 
 # --- done --------------------------------------------------------------------
 
@@ -112,10 +147,16 @@ cat <<EOF
 
 $(printf '\033[1m== Setup complete\033[0m')
 
-Next:
+Next — activate the environment first, then:
+
+  source .venv/bin/activate
 
   ./serve.sh                  start the endpoint (leave running, ~5 min cold)
   jupyter lab demo.ipynb      open the walkthrough
+
+Everything below expects that environment: run_benchmark.py, make_chart.py and
+jupyter all live in .venv. If a command reports a missing module, you have not
+activated it. (serve.sh is the exception -- it only needs Docker.)
 
 Verify the endpoint once it is up:
 

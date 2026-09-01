@@ -85,13 +85,10 @@ Full walkthrough: [NVIDIA Sync Getting Started](https://docs.nvidia.com/sync/lat
 
 The [DGX Dashboard](https://docs.nvidia.com/dgx/dgx-spark/dgx-dashboard.html) has an integrated JupyterLab, and NVIDIA Sync tunnels it automatically. Connect in Sync, click **DGX Dashboard** (it opens at `http://localhost:11000`), set the working directory to this sample, and start JupyterLab. Then open `demo.ipynb`.
 
-> **Important if you take this route.** The Dashboard's JupyterLab creates a **fresh virtual environment per working directory** and installs its own recommended packages. That environment is *not* the system Python that `setup.sh` installed into, so the sample's client dependencies will be missing. Install them once from a cell inside the notebook, or from a JupyterLab terminal:
+> **Important if you take this route.** The Dashboard's JupyterLab creates a **fresh virtual environment per working directory**, which is a *different* environment from the `.venv` that `setup.sh` builds — so the sample's dependencies will be missing. Two ways out, and the first is cleaner:
 >
-> ```
-> %pip install -r requirements.txt
-> ```
->
-> Changing the working directory creates another new environment, so you would need to repeat this.
+> - **Select the "DGX Spark demo" kernel** in JupyterLab. `setup.sh` registers `.venv` under that name, so the notebook runs against the right environment with nothing to install.
+> - Or install into the Dashboard's environment from a cell: `%pip install -r requirements.txt`. Changing the working directory spawns another new environment, so you would repeat this each time.
 
 ### Option B: plain SSH
 
@@ -147,9 +144,16 @@ Run the sample:
 
 ```bash
 cd nvidia-oci-samples/dgx-spark-samples/nemotron-lightning-vllm-endpoint
-./setup.sh          # pull container, install client deps, fetch weights
-./serve.sh          # start vLLM (leave running; ~5 min cold start)
+./setup.sh                    # environment, container, weights
+source .venv/bin/activate     # required — see below
+./serve.sh                    # start vLLM (leave running; ~5 min cold start)
 ```
+
+**`setup.sh` creates a virtual environment at `.venv` and installs into it.** DGX OS ships a
+PEP 668 "externally managed" Python, so installing into the system interpreter is blocked by
+design. Activate `.venv` before running the notebook, `run_benchmark.py`, or `make_chart.py` —
+if any of them reports a missing module, that is the reason. `serve.sh` is the exception: it
+only needs Docker.
 
 `setup.sh` is **safe to re-run**. It checks the local Hugging Face cache first with no network call, so weights you already have are never re-downloaded — a second run takes seconds. Expect 20–30 minutes the first time, and the download resumes if interrupted.
 
@@ -180,7 +184,7 @@ curl -s http://localhost:8000/v1/models | python3 -m json.tool
 | `make_chart.py` | Chart `results/summary.json` |
 | `endpoints.json` | Endpoint config. Keys come from the environment, never committed |
 | `results/` | Benchmark output — `summary.json` and generated charts |
-| `requirements.txt` | Client-side Python dependencies only |
+| `requirements.txt` | Client-side Python dependencies, installed into `.venv` |
 
 ## Serving Configuration
 
@@ -214,6 +218,7 @@ The fp8 KV cache is pinned by the checkpoint's own quantisation config, so vLLM 
 | `CONTAINER_NAME` | `vllm-nemotron` | Docker container name |
 | `HF_HOME` | `~/.cache/huggingface` | Hugging Face cache location |
 | `HF_TOKEN` | unset | Only needed if you hit download rate limits |
+| `VENV_DIR` | `.venv` in the sample directory | Where `setup.sh` creates the virtual environment |
 
 ## Benchmarking with When2Call
 
@@ -317,6 +322,23 @@ Stated plainly, because sizing this box correctly matters more than overselling 
 - **Do not select this hardware for throughput.** Its defensible advantages are capacity, data residency, zero marginal cost per token, and deterministic capacity with no rate limits.
 
 ## Known Issues
+
+### DGX OS has an externally-managed Python (PEP 668)
+
+`pip install` into the system interpreter fails with `error: externally-managed-environment`.
+This is deliberate on Debian-derived systems — the OS owns those packages.
+
+`setup.sh` handles it by creating a virtual environment at `.venv` and installing there, then
+registering it with Jupyter as a kernel named **DGX Spark demo**. Two consequences:
+
+- **Activate before running anything Python:** `source .venv/bin/activate`
+- **In JupyterLab, select the "DGX Spark demo" kernel**, not the default one
+
+If `python3 -m venv` itself fails, the module ships separately on Ubuntu:
+`sudo apt install -y python3-venv`.
+
+Resist `pip install --break-system-packages`. It works, and it can break OS-managed packages on
+a machine you would rather keep working.
 
 ### Picking a vLLM container image for aarch64
 

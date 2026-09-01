@@ -12,5 +12,10 @@ results/raw-*.jsonl
 .env
 *.key
 
+# Virtual environment created by setup.sh. DGX OS ships a PEP 668
+# externally-managed Python, so the sample installs into .venv rather than
+# system site-packages.
+.venv/
+
 # Notebook checkpoints — demo.ipynb is committed with outputs cleared.
 .ipynb_checkpoints/
