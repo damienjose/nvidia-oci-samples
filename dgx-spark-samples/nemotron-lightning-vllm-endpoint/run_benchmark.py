@@ -77,6 +77,28 @@ def call_with_backoff(client, *, model, messages, tools, max_tokens,
 # One endpoint
 # --------------------------------------------------------------------------
 
+def resolve_model(client, configured: str | None, name: str) -> str | None:
+    """Return a model id the endpoint will actually accept.
+
+    A server started with --served-model-name advertises a short alias rather
+    than the full Hugging Face path, so a hard-coded id 404s. Ask the endpoint
+    what it serves and prefer that.
+    """
+    try:
+        served = [m.id for m in client.models.list().data]
+    except Exception:
+        return configured                      # can't ask; try what we were given
+    if not served:
+        return configured
+    if configured in served:
+        return configured
+    chosen = served[0]
+    if configured:
+        print(f"    note: '{configured}' is not served by {name}; "
+              f"using '{chosen}' instead")
+    return chosen
+
+
 def run_endpoint(spec: dict, examples: list[dict], max_tokens: int,
                  concurrency: int | None, verbose: bool = True):
     from openai import OpenAI
@@ -88,6 +110,11 @@ def run_endpoint(spec: dict, examples: list[dict], max_tokens: int,
         return None, f"{key_env} is not set"
 
     client = OpenAI(base_url=spec["base_url"], api_key=api_key or "not-needed")
+
+    model_id = resolve_model(client, spec.get("model"), name)
+    if not model_id:
+        return None, "no model id: endpoint served none and none configured"
+    spec = {**spec, "model": model_id}
     workers = concurrency if concurrency is not None else spec.get("concurrency", 2)
 
     def one(ex):

@@ -59,6 +59,37 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
   docker rm -f "$CONTAINER_NAME" >/dev/null
 fi
 
+# Is the port already taken by something we did not start? Docker's own error
+# for this ("address already in use") does not say what is holding it, which
+# leaves you guessing. Check first and say something useful.
+port_holder() {
+  docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null \
+    | awk -v p=":${PORT}->" '$0 ~ p {print "docker container: " $1}'
+}
+
+if command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -q ":${PORT} "; then
+  HOLDER="$(port_holder)"
+  cat >&2 <<EOF
+
+ERROR: port ${PORT} is already in use.
+
+$( [[ -n "$HOLDER" ]] && echo "  Held by ${HOLDER}" || echo "  Not a container this script manages. Identify it with:
+    docker ps --format '{{.Names}}\t{{.Ports}}'
+    sudo ss -tlnp | grep :${PORT}" )
+
+If it is already serving this model, you do not need to start another one:
+
+    curl -s http://localhost:${PORT}/v1/models | python3 -m json.tool
+
+Otherwise either stop it, or run on a different port:
+
+    PORT=8001 ./serve.sh
+
+If you change the port, update BASE_URL in demo.ipynb to match.
+EOF
+  exit 1
+fi
+
 echo "Model:        $MODEL"
 echo "Port:         $PORT"
 echo "Context:      $MAX_MODEL_LEN"

@@ -60,7 +60,7 @@ No NVIDIA licence, NGC subscription, or support contract is required to run this
 - NVIDIA DGX Spark (GB10, `sm_121`, 128 GB unified memory) running DGX OS.
 - Docker available to your user.
 - Python 3.10 or newer.
-- Approximately 25 GB of free disk for model weights.
+- Approximately 25 GB of free disk for model weights (~20 GB actual, plus headroom).
 - A Hugging Face token (`HF_TOKEN`) only if you hit download rate limits.
 
 **No OCI account, cloud GPU shape, or network egress is required.**
@@ -206,6 +206,36 @@ vllm serve nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
 
 The fp8 KV cache is pinned by the checkpoint's own quantisation config, so vLLM selects `fp8_e4m3` whether or not `--kv-cache-dtype` is passed.
 
+## Credentials
+
+Three different things get confused here, so to be explicit — **the core demo needs none of them.**
+
+| | Needed for | When |
+| --- | --- | --- |
+| **nothing** | Serving the model, the notebook, the local benchmark | Always. The weights and the dataset are public. |
+| `HF_TOKEN` | Hugging Face downloads | **Optional.** Only if you hit anonymous rate limits, which usually happens on shared or heavily-NAT'd networks. |
+| `NVIDIA_API_KEY` | The four *hosted* models in the five-endpoint benchmark sweep | Only for `./run_benchmark.py` without `--only spark`. Not a Hugging Face token — get it from [build.nvidia.com](https://build.nvidia.com/). |
+
+```bash
+export HF_TOKEN=hf_...            # optional, rate limits only
+export NVIDIA_API_KEY=nvapi-...   # only for the hosted-model sweep
+```
+
+Both are read from the environment and never written to disk by this sample. `endpoints.json` references `NVIDIA_API_KEY` by name, not by value, so nothing secret is committed.
+
+**Verify the dataset needs no token** — takes a few seconds:
+
+```bash
+python3 -c "
+from datasets import load_dataset
+d = load_dataset('nvidia/When2Call', 'mcq', split='test')
+print('OK —', len(d), 'rows, no token required')"
+```
+
+A `401`/`403` or a *"gated dataset"* message means you need to accept the terms on the
+[dataset page](https://huggingface.co/datasets/nvidia/When2Call) while logged in, then export
+`HF_TOKEN`. Otherwise no credential is involved.
+
 ## Environment Variables
 
 | Variable | Default | Purpose |
@@ -289,7 +319,7 @@ scored differently in the two locations, the cross-model numbers would mean noth
 
 | Metric | Value |
 | --- | --- |
-| Weights on disk | 21.6 GB across 69 files |
+| Weights on disk | 20.1 GB (snapshot `e8f3c7c4…`) |
 | Weights resident | 17.86 GiB |
 | KV cache available | 84.78 GiB (~23.4M tokens) |
 | Cold start | ~5 minutes |

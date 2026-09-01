@@ -3,7 +3,9 @@
     "Endpoints for run_benchmark.py. API keys come from the environment -- never commit one.",
     "Set NVIDIA_API_KEY for the hosted NVIDIA endpoints and OPENAI_API_KEY for closed models.",
     "Remote concurrency is deliberately low: an earlier sweep at concurrency 4 tripped the",
-    "gateway rate limit and four of eight models returned HTTP 429 on every call."
+    "gateway rate limit and four of eight models returned HTTP 429 on every call.",
+    "The model id below is a hint: if the endpoint advertises a different one (a server",
+    "started with --served-model-name does), run_benchmark.py uses what is actually served."
   ],
   "endpoints": [
     {
