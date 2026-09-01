@@ -129,11 +129,19 @@ If `docker info` fails, add yourself to the docker group and start a new login s
 sudo gpasswd -a $(whoami) docker
 ```
 
-Clone the public sample repository:
+Clone the sample:
 
 ```bash
-git clone https://github.com/NVIDIA/nvidia-oci-samples.git
+git clone -b feature/nemotron-lightning-vllm-endpoint \
+  https://github.com/damienjose/nvidia-oci-samples.git
 ```
+
+> **Why a branch, and why that fork?** This sample is under review for
+> [NVIDIA/nvidia-oci-samples](https://github.com/NVIDIA/nvidia-oci-samples). Until it merges, the
+> code lives on the feature branch above. Once merged, the clone command becomes simply
+> `git clone https://github.com/NVIDIA/nvidia-oci-samples.git` with no branch flag — check the
+> upstream repository first, and use the fork only if the `dgx-spark-samples/` directory isn't
+> there yet.
 
 Run the sample:
 
