@@ -1,0 +1,167 @@
+{
+  "n_examples": 120,
+  "max_tokens": 3072,
+  "seed": 0,
+  "generated": "2026-08-12 (seed data \u2014 re-run to replace)",
+  "models": [
+    {
+      "name": "spark",
+      "model": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+      "location": "DGX Spark (local)",
+      "n_scored": 120,
+      "n_errors": 0,
+      "decision_accuracy": {
+        "k": 99,
+        "n": 120,
+        "rate": 0.825,
+        "lo": 0.7472413105195714,
+        "hi": 0.8825955132940744
+      },
+      "actionable_decision_accuracy": {
+        "k": 98,
+        "n": 120,
+        "rate": 0.8166666666666667,
+        "lo": 0.7379892641067634,
+        "hi": 0.8756978975578147
+      },
+      "tool_selection_accuracy": {
+        "k": 27,
+        "n": 28,
+        "rate": 0.9642857142857143,
+        "lo": 0.8228742388150135,
+        "hi": 0.9936676435024582
+      },
+      "over_call_rate": {
+        "k": 9,
+        "n": 80,
+        "rate": 0.1125,
+        "lo": 0.06032618694827016,
+        "hi": 0.20018410865677552
+      },
+      "per_label": {},
+      "elapsed_s": null,
+      "concurrency": null
+    },
+    {
+      "name": "nemotron-hosted",
+      "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+      "location": "NVIDIA Inference Hub",
+      "n_scored": 120,
+      "n_errors": 0,
+      "decision_accuracy": {
+        "k": 102,
+        "n": 120,
+        "rate": 0.85,
+        "lo": 0.7753231505975375,
+        "hi": 0.9029626596633118
+      },
+      "actionable_decision_accuracy": {
+        "k": 101,
+        "n": 120,
+        "rate": 0.8416666666666667,
+        "lo": 0.7659051081885379,
+        "hi": 0.8962310399232437
+      },
+      "tool_selection_accuracy": {
+        "k": 29,
+        "n": 30,
+        "rate": 0.9666666666666667,
+        "lo": 0.8332924860304112,
+        "hi": 0.9940915620051425
+      },
+      "over_call_rate": {
+        "k": 8,
+        "n": 80,
+        "rate": 0.1,
+        "lo": 0.05154699917768554,
+        "hi": 0.18510878983397458
+      },
+      "per_label": {},
+      "elapsed_s": null,
+      "concurrency": null
+    },
+    {
+      "name": "gpt-oss-120b",
+      "model": "nvcf/openai/gpt-oss-120b",
+      "location": "NVIDIA Inference Hub",
+      "n_scored": 85,
+      "n_errors": 0,
+      "decision_accuracy": {
+        "k": 72,
+        "n": 85,
+        "rate": 0.8470588235294118,
+        "lo": 0.7557162416738262,
+        "hi": 0.908387061283347
+      },
+      "actionable_decision_accuracy": {
+        "k": 71,
+        "n": 85,
+        "rate": 0.8352941176470589,
+        "lo": 0.7423150301896174,
+        "hi": 0.8992762963961264
+      },
+      "tool_selection_accuracy": {
+        "k": 17,
+        "n": 18,
+        "rate": 0.9444444444444444,
+        "lo": 0.7424220019799247,
+        "hi": 0.9901250641690756
+      },
+      "over_call_rate": {
+        "k": 6,
+        "n": 60,
+        "rate": 0.1,
+        "lo": 0.04664219945723587,
+        "hi": 0.20149694492511044
+      },
+      "per_label": {},
+      "elapsed_s": null,
+      "concurrency": null
+    },
+    {
+      "name": "gemma-4-31b",
+      "model": "nvidia/google/gemma-4-31b-it",
+      "location": "NVIDIA Inference Hub",
+      "n_scored": 120,
+      "n_errors": 0,
+      "decision_accuracy": {
+        "k": 100,
+        "n": 120,
+        "rate": 0.8333333333333334,
+        "lo": 0.756545606089762,
+        "hi": 0.8894408798729518
+      },
+      "actionable_decision_accuracy": {
+        "k": 99,
+        "n": 120,
+        "rate": 0.825,
+        "lo": 0.7472413105195714,
+        "hi": 0.8825955132940744
+      },
+      "tool_selection_accuracy": {
+        "k": 35,
+        "n": 37,
+        "rate": 0.9459459459459459,
+        "lo": 0.822950349364601,
+        "hi": 0.9850493372294601
+      },
+      "over_call_rate": {
+        "k": 17,
+        "n": 80,
+        "rate": 0.2125,
+        "lo": 0.13712274217035492,
+        "hi": 0.3142236061817758
+      },
+      "per_label": {},
+      "elapsed_s": null,
+      "concurrency": null
+    }
+  ],
+  "failed": [
+    {
+      "name": "gpt-5.6-luna",
+      "reason": "HTTP 429 on every call, including no-tool control requests"
+    }
+  ],
+  "_note": "Seeded from the Aug-12 sweep. Regenerate with ./run_benchmark.py."
+}

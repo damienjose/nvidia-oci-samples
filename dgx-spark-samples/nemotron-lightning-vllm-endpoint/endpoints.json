@@ -1,0 +1,50 @@
+{
+  "_comment": [
+    "Endpoints for run_benchmark.py. API keys come from the environment -- never commit one.",
+    "Set NVIDIA_API_KEY for the hosted NVIDIA endpoints and OPENAI_API_KEY for closed models.",
+    "Remote concurrency is deliberately low: an earlier sweep at concurrency 4 tripped the",
+    "gateway rate limit and four of eight models returned HTTP 429 on every call."
+  ],
+  "endpoints": [
+    {
+      "name": "spark",
+      "location": "DGX Spark (local)",
+      "base_url": "http://localhost:8000/v1",
+      "model": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+      "api_key_env": null,
+      "concurrency": 4
+    },
+    {
+      "name": "nemotron-hosted",
+      "location": "NVIDIA Inference Hub",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+      "api_key_env": "NVIDIA_API_KEY",
+      "concurrency": 2
+    },
+    {
+      "name": "gpt-oss-120b",
+      "location": "NVIDIA Inference Hub",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "model": "nvcf/openai/gpt-oss-120b",
+      "api_key_env": "NVIDIA_API_KEY",
+      "concurrency": 2
+    },
+    {
+      "name": "gemma-4-31b",
+      "location": "NVIDIA Inference Hub",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "model": "nvidia/google/gemma-4-31b-it",
+      "api_key_env": "NVIDIA_API_KEY",
+      "concurrency": 2
+    },
+    {
+      "name": "gpt-5.6-luna",
+      "location": "closed, hosted",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "model": "openai/openai/gpt-5.6-luna",
+      "api_key_env": "NVIDIA_API_KEY",
+      "concurrency": 1
+    }
+  ]
+}
