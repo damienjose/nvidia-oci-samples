@@ -65,6 +65,54 @@ No NVIDIA licence, NGC subscription, or support contract is required to run this
 
 **No OCI account, cloud GPU shape, or network egress is required.**
 
+## Connecting to Your DGX Spark
+
+You can work directly on the device with a keyboard and monitor, but most people drive it from a laptop. There are two ways to do that, and the first is considerably easier.
+
+### Option A: NVIDIA Sync (recommended)
+
+[NVIDIA Sync](https://docs.nvidia.com/dgx/dgx-spark/nvidia-sync.html) is a free utility for macOS, Windows, and Ubuntu that manages SSH connections, port forwarding, and tunnels for you. It is the fastest way to get from a laptop to a working JupyterLab on the device.
+
+1. **Install it** from [build.nvidia.com/spark/connect-to-your-spark/sync](https://build.nvidia.com/spark/connect-to-your-spark/sync).
+2. **Add your device.** On the same network, Sync discovers DGX Spark systems automatically over mDNS. Otherwise add it by hostname or IP, using the account credentials you created during first boot. Sync configures SSH key-based authentication for you, so subsequent connections need no password. See [Direct Connections](https://docs.nvidia.com/sync/latest/direct-connections.html).
+3. **Connect**, then launch **DGX Dashboard**, **Terminal**, or **VS Code** from the app list. Each opens against the device with tunnels already in place.
+
+**If your laptop is not on the same network as the device**, Sync supports [Tailscale connections](https://docs.nvidia.com/sync/latest/tailscale.html) — useful for a Spark sitting on an office network while you work remotely.
+
+Full walkthrough: [NVIDIA Sync Getting Started](https://docs.nvidia.com/sync/latest/getting-started.html).
+
+### Running this notebook through the DGX Dashboard
+
+The [DGX Dashboard](https://docs.nvidia.com/dgx/dgx-spark/dgx-dashboard.html) has an integrated JupyterLab, and NVIDIA Sync tunnels it automatically. Connect in Sync, click **DGX Dashboard** (it opens at `http://localhost:11000`), set the working directory to this sample, and start JupyterLab. Then open `demo.ipynb`.
+
+> **Important if you take this route.** The Dashboard's JupyterLab creates a **fresh virtual environment per working directory** and installs its own recommended packages. That environment is *not* the system Python that `setup.sh` installed into, so the sample's client dependencies will be missing. Install them once from a cell inside the notebook, or from a JupyterLab terminal:
+>
+> ```
+> %pip install -r requirements.txt
+> ```
+>
+> Changing the working directory creates another new environment, so you would need to repeat this.
+
+### Option B: plain SSH
+
+```bash
+ssh <username>@<device-name>.local
+```
+
+**The `.local` suffix is required** when connecting by device name — DGX Spark advertises itself over mDNS as `spark-xxxx.local`, and `ssh user@spark-xxxx` will fail to resolve. Use the IP address instead if mDNS is blocked on your network.
+
+To reach JupyterLab or the Dashboard this way you must tunnel the ports yourself:
+
+```bash
+# DGX Dashboard
+ssh -L 11000:localhost:11000 <username>@<device-name>.local
+
+# JupyterLab started manually by this sample
+ssh -L 8888:localhost:8888 <username>@<device-name>.local
+```
+
+The Dashboard's integrated JupyterLab assigns a **per-user port**, listed in `/opt/nvidia/dgx-dashboard-service/jupyterlab_ports.yaml` on the device — check there before tunnelling. NVIDIA Sync handles all of this for you, which is why Option A is recommended.
+
 ## Quickstart
 
 Verify local prerequisites:
@@ -91,15 +139,19 @@ Run the sample:
 
 ```bash
 cd nvidia-oci-samples/dgx-spark-samples/nemotron-lightning-vllm-endpoint
-./setup.sh          # pull container, install client deps, pre-download weights
+./setup.sh          # pull container, install client deps, fetch weights
 ./serve.sh          # start vLLM (leave running; ~5 min cold start)
 ```
+
+`setup.sh` is **safe to re-run**. It checks the local Hugging Face cache first with no network call, so weights you already have are never re-downloaded — a second run takes seconds. Expect 20–30 minutes the first time, and the download resumes if interrupted.
 
 In a second terminal:
 
 ```bash
 jupyter lab demo.ipynb
 ```
+
+Or open `demo.ipynb` from the DGX Dashboard's integrated JupyterLab — see [Connecting to Your DGX Spark](#connecting-to-your-dgx-spark), and note the virtual-environment caveat there.
 
 Verify the endpoint from the shell at any time:
 
@@ -147,6 +199,7 @@ The fp8 KV cache is pinned by the checkpoint's own quantisation config, so vLLM 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MODEL` | `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4` | Model to serve |
+| `MODEL_REVISION` | unset (`main`) | Pin a specific Hugging Face revision. Set this if you need byte-identical weights across machines |
 | `PORT` | `8000` | Host port for the endpoint |
 | `MAX_MODEL_LEN` | `65536` | Context length |
 | `VLLM_IMAGE` | `nvcr.io/nvidia/vllm:latest` | Container image |

@@ -59,9 +59,9 @@ docker pull "$IMAGE"
 
 # --- 4. model weights --------------------------------------------------------
 
-say "Pre-downloading model weights (~21.6 GB)"
-echo "Model: $MODEL"
-echo "Doing this now means ./serve.sh starts in ~5 min instead of 20+."
+say "Model weights (~21.6 GB)"
+echo "Model:    $MODEL"
+echo "Revision: ${MODEL_REVISION:-main}"
 echo
 
 if [[ -z "${HF_TOKEN:-}" ]]; then
@@ -70,12 +70,40 @@ if [[ -z "${HF_TOKEN:-}" ]]; then
   echo
 fi
 
-python3 - "$MODEL" <<'PY'
-import sys
+# Safe to re-run. We look in the local cache first with local_files_only=True,
+# which needs no network at all: if the weights are already there, this returns
+# immediately and nothing is re-downloaded. Only a cache miss reaches the Hub.
+python3 - "$MODEL" "${MODEL_REVISION:-}" <<'PY'
+import sys, os
 from huggingface_hub import snapshot_download
+from huggingface_hub.utils import LocalEntryNotFoundError
+
 model = sys.argv[1]
-path = snapshot_download(repo_id=model, resume_download=True)
-print(f"\nWeights cached at: {path}")
+revision = sys.argv[2] or None
+kwargs = {"repo_id": model}
+if revision:
+    kwargs["revision"] = revision
+
+def report(path, cached):
+    size = sum(os.path.getsize(os.path.join(r, f))
+               for r, _, fs in os.walk(path, followlinks=True)
+               for f in fs if os.path.exists(os.path.join(r, f)))
+    print(f"\n  {'Already cached' if cached else 'Downloaded'}: {size/2**30:.1f} GB")
+    print(f"  Path:     {path}")
+    print(f"  Snapshot: {os.path.basename(path)}")
+
+try:
+    path = snapshot_download(**kwargs, local_files_only=True)
+    report(path, cached=True)
+    print("\n  Nothing to download. Re-running this script is free.")
+except LocalEntryNotFoundError:
+    print("  Not in the local cache — downloading. This takes 20-30 minutes")
+    print("  on a first run, and is resumable if interrupted.\n")
+    path = snapshot_download(**kwargs)
+    report(path, cached=False)
+
+print("\n  Record that snapshot id alongside any benchmark numbers you publish —")
+print("  it is what makes them reproducible.")
 PY
 
 # --- done --------------------------------------------------------------------
