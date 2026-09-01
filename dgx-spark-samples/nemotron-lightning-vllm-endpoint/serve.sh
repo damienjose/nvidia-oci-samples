@@ -17,7 +17,11 @@ MODEL="${MODEL:-nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4}"
 PORT="${PORT:-8000}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-65536}"
 CONTAINER_NAME="${CONTAINER_NAME:-vllm-nemotron}"
-IMAGE="${VLLM_IMAGE:-nvcr.io/nvidia/vllm:latest}"
+# vLLM publishes arm64 builds under arch-suffixed tags (`*-aarch64`), but this
+# versioned tag is a multi-arch manifest list containing linux/arm64, so Docker
+# resolves the right platform on GB10 automatically. Pinned and stable rather
+# than a nightly, which can be pruned from the registry without warning.
+IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.19.0-cu130-ubuntu2404}"
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 
 DETACH_FLAG=""

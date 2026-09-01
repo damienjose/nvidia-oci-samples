@@ -210,7 +210,7 @@ The fp8 KV cache is pinned by the checkpoint's own quantisation config, so vLLM 
 | `MODEL_REVISION` | unset (`main`) | Pin a specific Hugging Face revision. Set this if you need byte-identical weights across machines |
 | `PORT` | `8000` | Host port for the endpoint |
 | `MAX_MODEL_LEN` | `65536` | Context length |
-| `VLLM_IMAGE` | `nvcr.io/nvidia/vllm:latest` | Container image |
+| `VLLM_IMAGE` | `vllm/vllm-openai:v0.19.0-cu130-ubuntu2404` | Container image. Multi-arch, includes `linux/arm64` — see Known Issues |
 | `CONTAINER_NAME` | `vllm-nemotron` | Docker container name |
 | `HF_HOME` | `~/.cache/huggingface` | Hugging Face cache location |
 | `HF_TOKEN` | unset | Only needed if you hit download rate limits |
@@ -317,6 +317,30 @@ Stated plainly, because sizing this box correctly matters more than overselling 
 - **Do not select this hardware for throughput.** Its defensible advantages are capacity, data residency, zero marginal cost per token, and deterministic capacity with no rate limits.
 
 ## Known Issues
+
+### Picking a vLLM container image for aarch64
+
+This costs people an afternoon, so it is worth stating plainly.
+
+- **`nvcr.io/nvidia/vllm:latest` does not exist.** Pulling it fails with `manifest unknown`.
+- **vLLM's `latest` tag is not multi-arch.** Its arm64 builds are published under separate
+  arch-suffixed tags — `latest-aarch64`, `nightly-aarch64`, `cu130-nightly-aarch64` — which
+  are single-architecture manifests.
+- **Versioned tags are multi-arch.** `vllm/vllm-openai:v0.19.0-cu130-ubuntu2404` is a manifest
+  list containing both `linux/arm64` and `linux/amd64`, so Docker resolves the correct platform
+  on GB10 with no suffix to get wrong. That is why it is the default here: stable, pinned to a
+  version, and CUDA 13 to match DGX Spark.
+
+Check any candidate before committing to it:
+
+```bash
+docker buildx imagetools inspect vllm/vllm-openai:v0.19.0-cu130-ubuntu2404 \
+  | grep -iE "platform|mediatype"
+```
+
+A manifest list shows `manifest.list.v2+json` and one `Platform:` line per architecture. A
+single-arch image shows only `manifest.v2+json`. Avoid pinning a `nightly-<sha>` tag in anything
+you expect others to run — nightly tags are pruned from the registry over time.
 
 - **Hugging Face snapshot directories are symlink farms** into `blobs/`. Mount the whole cache into the container, not just the snapshot directory, or every link dangles. `serve.sh` handles this.
 - **JupyterLab inherits group membership at login.** After `sudo gpasswd -a $(whoami) docker` you must restart the JupyterLab *server*; a kernel restart is not sufficient. Use `$(whoami)` rather than `$USER`, which can be `root` in a Jupyter-spawned shell.
