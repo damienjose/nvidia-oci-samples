@@ -382,6 +382,49 @@ def observe(message: Any, finish_reason: str | None = None) -> Record | None:
 # Aggregate
 # --------------------------------------------------------------------------
 
+def two_proportion_p(k1: int, n1: int, k2: int, n2: int) -> float:
+    """Two-sided p-value for two proportions differing, pooled z-test.
+
+    Overlapping confidence intervals are the usual eyeball test and they are
+    *conservative*: two intervals can overlap while the difference is real. So
+    do not decide "tie" from the picture alone.
+    """
+    if not n1 or not n2:
+        return 1.0
+    p = (k1 + k2) / (n1 + n2)
+    se = math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2))
+    if se == 0:
+        return 1.0
+    z = (k1 / n1 - k2 / n2) / se
+    return math.erfc(abs(z) / math.sqrt(2))
+
+
+def holm_pairwise(models: list[dict], metric: str, alpha: float = 0.05) -> list[dict]:
+    """Every pairwise comparison on one metric, Holm-Bonferroni corrected.
+
+    Five models is ten comparisons per metric. Testing all ten at 0.05 would
+    expect about one false positive from noise alone, so an uncorrected
+    "significant" here is worth very little. Holm controls that without being
+    as brutal as plain Bonferroni.
+
+    Returns the comparisons sorted by p, each with the threshold it had to beat
+    and whether it did.
+    """
+    pairs = []
+    for i, a in enumerate(models):
+        for b in models[i + 1:]:
+            ka, na = a[metric]["k"], a[metric]["n"]
+            kb, nb = b[metric]["k"], b[metric]["n"]
+            pairs.append({"a": a["name"], "b": b["name"],
+                          "p": two_proportion_p(ka, na, kb, nb)})
+    pairs.sort(key=lambda x: x["p"])
+    m = len(pairs)
+    for i, pair in enumerate(pairs):
+        pair["threshold"] = alpha / (m - i)
+        pair["significant"] = pair["p"] < pair["threshold"]
+    return pairs
+
+
 def score(records: list[Record]) -> dict:
     ok = [r for r in records if r.error is None]
     n = len(ok)
