@@ -59,9 +59,9 @@
       "base_url": "https://integrate.api.nvidia.com/v1",
       "model": "google/gemma-4-31b-it",
       "api_key_env": "NVIDIA_API_KEY",
-      "concurrency": 8,
+      "concurrency": 4,
       "max_tokens": 8192,
-      "_note": "Dense 33B. Measured 264 s for a trivial request on the free tier -- queue, not compute. High concurrency overlaps the waits.",
+      "_note": "Dense 33B. Latency on the free tier is bimodal -- measured at both 1.7 s and 264 s for the same trivial request, so the slow case is queueing rather than compute. Concurrency 4 absorbs a queue without bursting hard against a shared endpoint.",
       "timeout": 600
     },
     {
@@ -73,7 +73,7 @@
       "concurrency": 8,
       "max_tokens": 8192,
       "timeout": 600,
-      "_note": "Timed out at 120 s on preflight. Same queue behaviour as gemma."
+      "_note": "Measured 75.6 s to return 90 tokens -- 1.2 tok/s is queueing, not generation, so concurrency is the only lever that helps. At 8 this endpoint is about 19 min of the sweep; at 2 it would be over an hour."
     }
   ]
 }
