@@ -154,6 +154,7 @@ class Record:
     gold_tool: str | None
     has_text: bool
     finish_reason: str | None
+    reasoned: bool = False
     error: str | None = None
 
     @property
@@ -176,9 +177,20 @@ def observe(message: Any, finish_reason: str | None = None) -> Record | None:
     the caller; this only reads what the server returned."""
     tool_calls = getattr(message, "tool_calls", None) or []
     content = (getattr(message, "content", None) or "").strip()
+
+    # Reasoning models return their thinking on a separate field -- `reasoning`
+    # on vLLM 0.26+, `reasoning_content` on the NVIDIA API catalog and older
+    # builds. It is not an answer, so it must not count as one for
+    # actionable accuracy. But a model that produced a long trace and no
+    # content did not "stay silent" either; it ran out of budget mid-thought.
+    # Record that separately so the two are distinguishable in the raw data.
+    reasoning = (getattr(message, "reasoning", None)
+                 or getattr(message, "reasoning_content", None) or "").strip()
+
     name = tool_calls[0].function.name if tool_calls else None
     return Record(label="", called=bool(tool_calls), tool_name=name,
                   gold_tool=None, has_text=bool(content),
+                  reasoned=bool(reasoning),
                   finish_reason=finish_reason)
 
 

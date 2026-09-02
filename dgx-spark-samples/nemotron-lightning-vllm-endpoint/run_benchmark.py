@@ -44,6 +44,7 @@ RESULTS = HERE / "results"
 # --------------------------------------------------------------------------
 
 def call_with_backoff(client, *, model, messages, tools, max_tokens,
+                      extra_body=None,
                       max_attempts=6, base=2.0, cap=45.0, timeout=180):
     """One chat completion, retrying 429 and 5xx with exponential backoff and
     full jitter. Returns (message, finish_reason, error_str)."""
@@ -56,6 +57,8 @@ def call_with_backoff(client, *, model, messages, tools, max_tokens,
             if tools:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
+            if extra_body:
+                kwargs["extra_body"] = extra_body
             resp = client.chat.completions.create(**kwargs)
             choice = resp.choices[0]
             return choice.message, choice.finish_reason, None
@@ -92,11 +95,22 @@ def resolve_model(client, configured: str | None, name: str) -> str | None:
         return configured
     if configured in served:
         return configured
-    chosen = served[0]
-    if configured:
+
+    # Only auto-pick when there is genuinely no choice. A single-model server
+    # (a local vLLM with --served-model-name) advertises one id and picking it
+    # is right. A hosted catalogue advertises hundreds, and picking served[0]
+    # would silently benchmark an arbitrary model under the configured name --
+    # a wrong number is far worse than no number.
+    if len(served) == 1:
         print(f"    note: '{configured}' is not served by {name}; "
-              f"using '{chosen}' instead")
-    return chosen
+              f"using '{served[0]}', the only model this endpoint offers")
+        return served[0]
+
+    near = [m for m in served if configured and configured.split("/")[-1] in m]
+    hint = f" Closest matches: {', '.join(near[:3])}." if near else ""
+    print(f"    '{configured}' is not offered by {name} "
+          f"({len(served)} models available).{hint}")
+    return None
 
 
 def run_endpoint(spec: dict, examples: list[dict], max_tokens: int,
@@ -117,10 +131,19 @@ def run_endpoint(spec: dict, examples: list[dict], max_tokens: int,
     spec = {**spec, "model": model_id}
     workers = concurrency if concurrency is not None else spec.get("concurrency", 2)
 
+    # A reasoning model spends part of its budget thinking before it can emit a
+    # tool call, and runs out sooner than a non-reasoning one on the same
+    # number. Truncation scores identically to deciding not to call, so a
+    # single global budget quietly understates recall for the models that
+    # think. Let an endpoint raise its own.
+    budget = spec.get("max_tokens", max_tokens)
+    extra = spec.get("extra_body")
+
     def one(ex):
         msg, finish, err = call_with_backoff(
             client, model=spec["model"], messages=w2c.build_messages(ex),
-            tools=w2c.to_openai_tools(ex["tools"]), max_tokens=max_tokens)
+            tools=w2c.to_openai_tools(ex["tools"]), max_tokens=budget,
+            extra_body=extra)
         if err:
             return w2c.Record(label=ex["label"], called=False, tool_name=None,
                               gold_tool=ex.get("gold_tool"), has_text=False,
@@ -148,11 +171,73 @@ def run_endpoint(spec: dict, examples: list[dict], max_tokens: int,
     summary.update({"name": name, "model": spec["model"],
                     "location": spec.get("location", ""),
                     "elapsed_s": round(elapsed, 1),
-                    "concurrency": workers})
+                    "concurrency": workers,
+                    "max_tokens": budget})
     return (summary, records), None
 
 
 # --------------------------------------------------------------------------
+
+def sweep(config=None, n_per_label=40, only=None, concurrency=None,
+          max_tokens=3072, seed=0, out=None, save_raw=False, verbose=True):
+    """Run the sweep and return the summary dict, also writing it to `out`.
+
+    Factored out of main() so a notebook can call it directly rather than
+    shelling out. `main()` is a thin wrapper over this.
+
+    Endpoints whose api_key_env is unset are skipped with a reason rather than
+    scored as failures -- a missing credential is not a model behaviour.
+    """
+    config = Path(config or (HERE / "endpoints.json"))
+    out = Path(out or (RESULTS / "summary.json"))
+
+    specs = json.loads(config.read_text())["endpoints"]
+    if only:
+        only = [only] if isinstance(only, str) else list(only)
+        specs = [s for s in specs if s["name"] in only]
+    if not specs:
+        raise ValueError(f"No endpoints selected from {config}")
+
+    if verbose:
+        print(f"Loading When2Call ({n_per_label} per label = "
+              f"{3 * n_per_label} examples)...")
+    examples = w2c.load_examples(n_per_label=n_per_label, seed=seed)
+    if verbose:
+        print(f"  {len(examples)} examples\n")
+
+    RESULTS.mkdir(exist_ok=True)
+    result = {"n_examples": len(examples), "max_tokens": max_tokens,
+              "seed": seed, "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
+              "models": [], "failed": []}
+
+    for spec in specs:
+        if verbose:
+            print(f"  {spec['name']} ({spec.get('location','')}) ...", flush=True)
+        got, err = run_endpoint(spec, examples, max_tokens, concurrency,
+                                verbose=verbose)
+        if err:
+            if verbose:
+                print(f"    SKIPPED — {err}\n")
+            result["failed"].append({"name": spec["name"], "reason": err})
+            continue
+        summary, records = got
+        result["models"].append(summary)
+        if verbose:
+            print(w2c.summarise(spec["name"], summary))
+        if save_raw:
+            raw = RESULTS / f"raw-{spec['name']}.jsonl"
+            raw.write_text("\n".join(json.dumps(asdict(r)) for r in records))
+
+    out.write_text(json.dumps(result, indent=2))
+    if verbose:
+        print(f"\nWrote {out}")
+        if result["failed"]:
+            print("\nEndpoints that produced no data:")
+            for f in result["failed"]:
+                print(f"  {f['name']}: {f['reason'][:100]}")
+            print("\nA model with no data is reported as 'no data', never as a low score.")
+    return result
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
@@ -173,44 +258,13 @@ def main() -> int:
     ap.add_argument("--save-raw", action="store_true")
     args = ap.parse_args()
 
-    specs = json.loads(Path(args.config).read_text())["endpoints"]
-    if args.only:
-        specs = [s for s in specs if s["name"] in args.only]
-    if not specs:
-        print("No endpoints selected.", file=sys.stderr)
+    try:
+        sweep(config=args.config, n_per_label=args.n, only=args.only,
+              concurrency=args.concurrency, max_tokens=args.max_tokens,
+              seed=args.seed, out=args.out, save_raw=args.save_raw)
+    except ValueError as e:
+        print(e, file=sys.stderr)
         return 2
-
-    print(f"Loading When2Call ({args.n} per label = {3 * args.n} examples)...")
-    examples = w2c.load_examples(n_per_label=args.n, seed=args.seed)
-    print(f"  {len(examples)} examples\n")
-
-    RESULTS.mkdir(exist_ok=True)
-    out = {"n_examples": len(examples), "max_tokens": args.max_tokens,
-           "seed": args.seed, "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
-           "models": [], "failed": []}
-
-    for spec in specs:
-        print(f"  {spec['name']} ({spec.get('location','')}) ...", flush=True)
-        result, err = run_endpoint(spec, examples, args.max_tokens,
-                                   args.concurrency)
-        if err:
-            print(f"    SKIPPED — {err}\n")
-            out["failed"].append({"name": spec["name"], "reason": err})
-            continue
-        summary, records = result
-        out["models"].append(summary)
-        print(w2c.summarise(spec["name"], summary))
-        if args.save_raw:
-            raw = RESULTS / f"raw-{spec['name']}.jsonl"
-            raw.write_text("\n".join(json.dumps(asdict(r)) for r in records))
-
-    Path(args.out).write_text(json.dumps(out, indent=2))
-    print(f"\nWrote {args.out}")
-    if out["failed"]:
-        print("\nEndpoints that produced no data:")
-        for f in out["failed"]:
-            print(f"  {f['name']}: {f['reason'][:100]}")
-        print("\nA model with no data is reported as 'no data', never as a low score.")
     return 0
 
 

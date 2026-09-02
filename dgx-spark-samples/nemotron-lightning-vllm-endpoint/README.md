@@ -229,9 +229,10 @@ curl -s http://localhost:8000/v1/models | python3 -m json.tool
 | `demo.ipynb` | Walkthrough: environment, endpoint, SDK switch, streaming, agent loop, headroom |
 | `demo_tools.py` | Tool implementations and JSON schemas for the agent section |
 | `when2call.py` | Benchmark scoring — dataset loading, metrics, Wilson intervals |
+| `preflight.py` | Check every endpoint answers, serves the right model, and returns structured tool calls — before you sweep |
 | `run_benchmark.py` | Run When2Call against one or more endpoints, with 429 backoff |
 | `make_chart.py` | Chart `results/summary.json` |
-| `endpoints.json` | Endpoint config. Keys come from the environment, never committed |
+| `endpoints.json` | Endpoint config — the local Spark plus four models on the public NVIDIA API catalog. Keys come from the environment, never committed |
 | `results/` | Benchmark output — `summary.json` and generated charts |
 | `requirements.txt` | Client-side Python dependencies, installed into `.venv` |
 
@@ -301,7 +302,36 @@ Three different things get confused here, so to be explicit — **the core demo 
 | --- | --- | --- |
 | **nothing** | Serving the model, the notebook, the local benchmark | Always. The weights and the dataset are public. |
 | `HF_TOKEN` | Hugging Face downloads | **Optional.** Only if you hit anonymous rate limits, which usually happens on shared or heavily-NAT'd networks. |
-| `NVIDIA_API_KEY` | The four *hosted* models in the five-endpoint benchmark sweep | Only for `./run_benchmark.py` without `--only spark`. Not a Hugging Face token — get it from [build.nvidia.com](https://build.nvidia.com/). |
+| `NVIDIA_API_KEY` | The four *hosted* models in the five-endpoint benchmark sweep | Only for `./run_benchmark.py` without `--only spark`. A free NGC personal API key from [build.nvidia.com](https://build.nvidia.com/) — not a Hugging Face token. |
+
+**Anyone can get this key.** Create an NGC account at [ngc.nvidia.com](https://ngc.nvidia.com),
+generate a Personal API Key with the **NVIDIA Public API Endpoints** service enabled, and it works
+against `https://integrate.api.nvidia.com/v1` — the base URL printed on every model card at
+build.nvidia.com. The free tier is rate limited, which is why `endpoints.json` uses low
+concurrency; higher throughput comes with NVIDIA AI Enterprise.
+
+> **A note if you work at NVIDIA.** There is a second, internal service —
+> `inference-api.nvidia.com`, the NVIDIA Inference Hub — with a much larger catalogue and a
+> different key from `inference.nvidia.com/key-management`. It is employee-only, so this sample
+> deliberately does **not** use it: a benchmark nobody outside NVIDIA can re-run is not
+> reproducible, and reproducibility is the point. If you want to run the sweep against the Hub,
+> copy `endpoints.json`, change `base_url` and the model ids, and keep the copy local —
+> `endpoints-*.json` is gitignored for that purpose.
+
+The model ids in `endpoints.json` are the catalog's own, taken from each model card. They differ
+from the Hub's, which carry a provider prefix — `openai/gpt-oss-120b` here versus
+`nvcf/openai/gpt-oss-120b` there. Ids are not portable between the two services.
+
+```bash
+curl -s https://integrate.api.nvidia.com/v1/models \
+  -H "Authorization: Bearer $NVIDIA_API_KEY" | python3 -c "
+import json,sys
+ids = [m['id'] for m in json.load(sys.stdin)['data']]
+print(len(ids), 'models visible to this key')
+for want in ['nvidia/nemotron-3.5-lightning-30b-a3b', 'openai/gpt-oss-120b',
+             'google/gemma-4-31b-it', 'moonshotai/kimi-k3']:
+    print(('  ok   ' if want in ids else '  MISSING  ') + want)"
+```
 
 Both are read from the environment and never written to disk by this sample. `endpoints.json`
 references `NVIDIA_API_KEY` by name, not by value, so nothing secret is committed.
@@ -438,7 +468,7 @@ If a hosted model still returns no data, lower it further:
 ### The local-vs-hosted control
 
 `endpoints.json` runs Nemotron 3.5 Lightning in **two places** — on the Spark and on the
-Inference Hub. That pair is the control for the whole comparison: if the same model
+API catalog. That pair is the control for the whole comparison: if the same model
 scored differently in the two locations, the cross-model numbers would mean nothing.
 
 ## Measured On One DGX Spark
@@ -691,7 +721,28 @@ reasoning trace scores exactly like a decision not to call a tool.
 
 ## Tests
 
-This sample has no automated test suite. Verify manually:
+Run `preflight.py` before any sweep. One request per endpoint, and it never prints a key:
+
+```bash
+source .venv/bin/activate
+./preflight.py                    # all five
+./preflight.py --only kimi-k3     # just one
+```
+
+It catches the three failures that would otherwise cost you a 600-request run — and two of
+them produce a plausible-looking number rather than an error, which is worse:
+
+| Finding | Why it matters |
+| --- | --- |
+| `401` | Keys are not portable between the public catalog and the internal Hub |
+| model not in the catalogue | The configured id is wrong; near-matches are suggested |
+| no structured `tool_calls` | Every When2Call example scores as "decided not to call" — a broken measurement that looks like a low score |
+| budget exhausted, `finish: length` | Reasoning consumed the budget before the call; recall is understated and tool selection flattered |
+| little headroom | Passed, but the harder examples will truncate |
+
+Exit status is non-zero if any endpoint would produce meaningless data, so it drops into CI.
+
+Then verify the rest manually:
 
 ```bash
 # 1. Endpoint health

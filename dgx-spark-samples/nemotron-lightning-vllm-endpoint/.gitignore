@@ -19,3 +19,8 @@ results/raw-*.jsonl
 
 # Notebook checkpoints — demo.ipynb is committed with outputs cleared.
 .ipynb_checkpoints/
+
+# Alternate endpoint configs. The committed endpoints.json points only at the
+# public NVIDIA API catalog, so anyone can reproduce the sweep. NVIDIA staff
+# using the internal Inference Hub keep that variant here, uncommitted.
+endpoints-*.json
