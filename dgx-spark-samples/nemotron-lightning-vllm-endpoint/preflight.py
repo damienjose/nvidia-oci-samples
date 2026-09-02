@@ -188,6 +188,12 @@ def check(spec: dict, timeout: int | None = None,
         if errs:
             r["verdict"] = WARN
             r["notes"].append(f"{len(errs)}/{len(got)} failed: {errs[0]['error'][:110]}")
+            if any("429" in e["error"] for e in errs):
+                r["notes"].append(
+                    f"429s at concurrency {spec.get('concurrency', 2)}. This probe does "
+                    f"not retry; run_benchmark.py does, with exponential backoff, so the "
+                    f"sweep may still complete -- more slowly. Lower concurrency if most "
+                    f"requests are being rejected.")
 
         called = [g for g in ok_ if g["called"]]
         r["called"] = f"{len(called)}/{len(ok_)}"

@@ -70,10 +70,10 @@
       "base_url": "https://integrate.api.nvidia.com/v1",
       "model": "moonshotai/kimi-k3",
       "api_key_env": "NVIDIA_API_KEY",
-      "concurrency": 8,
+      "concurrency": 2,
       "max_tokens": 8192,
       "timeout": 600,
-      "_note": "Measured 75.6 s to return 90 tokens -- 1.2 tok/s is queueing, not generation, so concurrency is the only lever that helps. At 8 this endpoint is about 19 min of the sweep; at 2 it would be over an hour."
+      "_note": "Rate limited hard: 5 of 6 real requests returned 429 at concurrency 8. The free tier caps requests, not just tokens, so concurrency does not buy throughput here. The sweep retries with backoff; preflight does not."
     }
   ]
 }

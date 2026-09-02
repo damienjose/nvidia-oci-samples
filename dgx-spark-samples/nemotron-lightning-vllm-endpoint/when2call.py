@@ -30,6 +30,7 @@ Dataset: https://huggingface.co/datasets/nvidia/When2Call (CC-BY-4.0)
 from __future__ import annotations
 
 import json
+import re
 import math
 import random
 from dataclasses import dataclass, field, asdict
@@ -69,6 +70,78 @@ def pct(x: float) -> str:
 # --------------------------------------------------------------------------
 # Dataset
 # --------------------------------------------------------------------------
+
+# OpenAI's function-name grammar. The dataset carries names straight from BFCL
+# like "api_token_api.APITokenApi.get_api_tokens" and "cmd_controller.exe",
+# which contain dots and fail validation on stricter gateways:
+#     Validation: Function at index 0 has an invalid name: "cmd_controller.exe"
+# vLLM accepts them, so the local endpoint scores fine while hosted ones reject
+# every request -- an apples-to-oranges comparison hiding as a model result.
+_NAME_OK = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+# JSON Schema type names, versus the Python type names the dataset sometimes
+# uses. Strict validators reject the latter:
+#     Tool 0 function has invalid 'parameters' schema: 'dict' is not valid
+_TYPE_FIXES = {"dict": "object", "list": "array", "tuple": "array",
+               "str": "string", "int": "integer", "float": "number",
+               "double": "number", "bool": "boolean", "none": "null",
+               "any": "string"}
+
+
+def sanitise_name(name: str | None) -> str | None:
+    """Make a function name satisfy ^[A-Za-z0-9_-]{1,64}$, or return it as-is.
+
+    Applied to both the tools we send and the gold tool we score against, so
+    the two still compare equal.
+    """
+    if not name:
+        return None
+    if _NAME_OK.match(name):
+        return name
+    return re.sub(r"[^A-Za-z0-9_-]", "_", name)[:64] or None
+
+
+def normalise_schema(node: Any) -> Any:
+    """Recursively map Python type names onto JSON Schema type names."""
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            if k == "type" and isinstance(v, str):
+                out[k] = _TYPE_FIXES.get(v.strip().lower(), v)
+            elif k == "type" and isinstance(v, list):
+                out[k] = [_TYPE_FIXES.get(str(t).strip().lower(), t) for t in v]
+            else:
+                out[k] = normalise_schema(v)
+        return out
+    if isinstance(node, list):
+        return [normalise_schema(v) for v in node]
+    return node
+
+
+def tool_name_of(value: Any) -> str | None:
+    """Pull a bare function name out of whatever the dataset stored.
+
+    `target_tool` follows the same convention as `tools`: it may be a bare
+    name, a JSON string of the whole function spec, or a dict. Comparing the
+    raw value against the name a model returned gives 0% tool selection for
+    every model, which reads as a finding and is not one.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return (value.get("name")
+                or (value.get("function") or {}).get("name"))
+    if isinstance(value, str):
+        v = value.strip()
+        if v.startswith("{"):
+            try:
+                d = json.loads(v)
+            except json.JSONDecodeError:
+                return v or None
+            return (d.get("name") or (d.get("function") or {}).get("name") or None)
+        return v or None
+    return None
+
 
 def parse_tools(tools: Any) -> list[dict] | None:
     """Normalise the dataset's tool spec to a list of dicts.
@@ -114,14 +187,27 @@ def normalise_row(row: dict) -> dict | None:
              or row.get("answer") or row.get("category"))
     query = (row.get("query") or row.get("question")
              or row.get("user_query"))
-    gold = (row.get("gold_tool") or row.get("target_tool")
-            or row.get("target_function") or row.get("function_name"))
+    gold = tool_name_of(row.get("gold_tool") or row.get("target_tool")
+                        or row.get("target_function") or row.get("function_name"))
     tools = parse_tools(row.get("tools") or row.get("functions")
                         or row.get("available_tools"))
 
     if label not in LABELS or not query or not tools:
         return None
-    return {"label": label, "tools": tools, "query": query, "gold_tool": gold}
+
+    # Repair the tool specs once, here, so every endpoint is sent the same
+    # valid schemas and the gold name still matches what a model will return.
+    repaired = []
+    for t in tools:
+        t = normalise_schema(dict(t))
+        if "function" in t and isinstance(t["function"], dict):
+            t["function"]["name"] = sanitise_name(t["function"].get("name"))
+        elif t.get("name"):
+            t["name"] = sanitise_name(t["name"])
+        repaired.append(t)
+
+    return {"label": label, "tools": repaired, "query": query,
+            "gold_tool": sanitise_name(gold)}
 
 
 # Filled in by load_examples() so a run can record exactly what it scored.
