@@ -33,7 +33,9 @@
       "base_url": "http://localhost:8000/v1",
       "model": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
       "api_key_env": null,
-      "concurrency": 4
+      "concurrency": 4,
+      "max_tokens": 8192,
+      "_note": "Matched to nemotron-hosted so the local-vs-hosted control is a fair one. At the 3072 default this reasoning model exhausted its budget on three examples: a correct decision, but no tool call and no text, which reads as a silent failure and understates the local result."
     },
     {
       "name": "nemotron-hosted",
