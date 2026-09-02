@@ -155,7 +155,7 @@ design. Activate `.venv` before running the notebook, `run_benchmark.py`, or `ma
 if any of them reports a missing module, that is the reason. `serve.sh` is the exception: it
 only needs Docker.
 
-`setup.sh` is **safe to re-run**. It checks the local Hugging Face cache first with no network call, so weights you already have are never re-downloaded — a second run takes seconds. Expect 20–30 minutes the first time, and the download resumes if interrupted.
+`setup.sh` is **safe to re-run**. It checks the local Hugging Face cache first with no network call, so weights you already have are never re-downloaded — a second run takes seconds. A first run measured **3 min 39 s end to end** on a wired connection, of which 3 min 18 s was the ~20 GB download; it is bandwidth-bound, so expect longer on a slower link. The download resumes if interrupted.
 
 In a second terminal:
 
@@ -319,9 +319,12 @@ scored differently in the two locations, the cross-model numbers would mean noth
 
 | Metric | Value |
 | --- | --- |
-| Weights on disk | 20.1 GB (snapshot `e8f3c7c4…`) |
+| Weights on disk | 20.1 GB across 70 files |
 | Weights resident | 17.86 GiB |
 | KV cache available | 84.78 GiB (~23.4M tokens) |
+| Model snapshot | `cc84af2fe71647d87f4486c064f320e1e7535243` |
+| First-run download | 3 min 18 s (~100 MB/s wired) |
+| `setup.sh`, cold, end to end | 3 min 39 s |
 | Cold start | ~5 minutes |
 | TTFT, short prompt | 67.1 ms |
 | TTFT, ~8k prompt | 87.2 ms |
@@ -369,6 +372,26 @@ If `python3 -m venv` itself fails, the module ships separately on Ubuntu:
 
 Resist `pip install --break-system-packages`. It works, and it can break OS-managed packages on
 a machine you would rather keep working.
+
+### The vLLM image sets its own ENTRYPOINT
+
+`vllm/vllm-openai` ships `ENTRYPOINT ["vllm", "serve"]`. Passing `vllm serve <model>` as the
+container command runs `vllm serve vllm serve <model>`: argparse takes the literal string `vllm`
+as the model argument and reports the real model name as junk.
+
+```
+vllm: error: unrecognized arguments: serve nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+```
+
+That message reads like a bad model name. It is not — the model id is fine, it just arrived in the
+wrong argument slot. `serve.sh` passes `--entrypoint vllm` and then `serve <model> --flags`, so the
+final command is exactly `vllm serve …` whatever the image's default entrypoint happens to be. If
+you write your own `docker run`, check yours first:
+
+```bash
+docker inspect vllm/vllm-openai:v0.19.0-cu130-ubuntu2404 \
+  --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}'
+```
 
 ### Picking a vLLM container image for aarch64
 

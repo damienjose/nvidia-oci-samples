@@ -5,7 +5,7 @@
 # One-time setup: verify the machine, install client deps, pre-download weights.
 #
 # Run this once. Then ./serve.sh to start the endpoint.
-# Downloads ~21.6 GB of model weights.
+# Downloads ~20 GB of model weights on a first run.
 
 set -euo pipefail
 
@@ -94,7 +94,7 @@ docker pull "$IMAGE"
 
 # --- 4. model weights --------------------------------------------------------
 
-say "Model weights (~21.6 GB)"
+say "Model weights (~20 GB)"
 echo "Model:    $MODEL"
 echo "Revision: ${MODEL_REVISION:-main}"
 echo
@@ -132,8 +132,9 @@ try:
     report(path, cached=True)
     print("\n  Nothing to download. Re-running this script is free.")
 except LocalEntryNotFoundError:
-    print("  Not in the local cache — downloading. This takes 20-30 minutes")
-    print("  on a first run, and is resumable if interrupted.\n")
+    print("  Not in the local cache — downloading ~20 GB across 70 files.")
+    print("  Bandwidth-bound: about 3-4 minutes on a fast wired link, longer")
+    print("  on slower networks. Resumable if interrupted.\n")
     path = snapshot_download(**kwargs)
     report(path, cached=False)
 

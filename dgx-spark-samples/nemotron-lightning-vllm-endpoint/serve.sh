@@ -109,6 +109,25 @@ echo
 # The fp8 KV cache is pinned by the checkpoint's own quantisation config, so
 # vLLM selects fp8_e4m3 regardless of --kv-cache-dtype. Don't bother passing it.
 
+# --entrypoint vllm is deliberate, and the failure it prevents is worth knowing.
+#
+# This image ships ENTRYPOINT ["vllm", "serve"]. Passing "vllm serve <model>" as
+# the container command therefore runs:
+#
+#     vllm serve vllm serve <model> --flags
+#            ^^^^ entrypoint    ^^^^ our command
+#
+# argparse consumes the literal string "vllm" as the model_tag positional and
+# then reports the real model as junk:
+#
+#     vllm: error: unrecognized arguments: serve nvidia/NVIDIA-Nemotron-...
+#
+# which reads like a bad model name and is not. Overriding the entrypoint makes
+# the final command exactly "vllm serve <model> --flags" regardless of what the
+# image's default entrypoint is in this or a future tag. Confirm yours with:
+#
+#     docker inspect "$IMAGE" --format '{{json .Config.Entrypoint}}'
+
 # shellcheck disable=SC2086
 exec docker run $DETACH_FLAG --rm \
   --name "$CONTAINER_NAME" \
@@ -117,8 +136,9 @@ exec docker run $DETACH_FLAG --rm \
   -p "${PORT}:8000" \
   -v "${HF_CACHE}:/root/.cache/huggingface" \
   -e HF_TOKEN="${HF_TOKEN:-}" \
+  --entrypoint vllm \
   "$IMAGE" \
-  vllm serve "$MODEL" \
+  serve "$MODEL" \
     --max-model-len "$MAX_MODEL_LEN" \
     --reasoning-parser nemotron_v3 \
     --enable-auto-tool-choice \
