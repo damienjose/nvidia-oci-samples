@@ -303,12 +303,48 @@ Three different things get confused here, so to be explicit — **the core demo 
 | `HF_TOKEN` | Hugging Face downloads | **Optional.** Only if you hit anonymous rate limits, which usually happens on shared or heavily-NAT'd networks. |
 | `NVIDIA_API_KEY` | The four *hosted* models in the five-endpoint benchmark sweep | Only for `./run_benchmark.py` without `--only spark`. Not a Hugging Face token — get it from [build.nvidia.com](https://build.nvidia.com/). |
 
+Both are read from the environment and never written to disk by this sample. `endpoints.json`
+references `NVIDIA_API_KEY` by name, not by value, so nothing secret is committed.
+
+### Setting a key without putting it on screen
+
+`export NVIDIA_API_KEY=nvapi-...` types the key in the clear and saves it to your shell history.
+Fine alone at a desk; not fine if you are recording, pairing, or presenting. Two better ways:
+
 ```bash
-export HF_TOKEN=hf_...            # optional, rate limits only
-export NVIDIA_API_KEY=nvapi-...   # only for the hosted-model sweep
+# Prompted, never echoed, never in history
+read -rs -p "NVIDIA_API_KEY: " NVIDIA_API_KEY && export NVIDIA_API_KEY && echo
+
+# Or keep it in a file outside the repo, readable only by you
+install -m 600 /dev/null ~/.nvidia_api_key   # create it 0600 from the start,
+                                             # then paste the key in with an editor
+export NVIDIA_API_KEY="$(cat ~/.nvidia_api_key)"
 ```
 
-Both are read from the environment and never written to disk by this sample. `endpoints.json` references `NVIDIA_API_KEY` by name, not by value, so nothing secret is committed.
+Confirm it took, without printing it:
+
+```bash
+[ -n "$NVIDIA_API_KEY" ] && echo "set, ${#NVIDIA_API_KEY} chars" || echo "not set"
+```
+
+**Never set a key in a notebook cell.** `os.environ["NVIDIA_API_KEY"] = "nvapi-..."` is saved into
+the `.ipynb`, survives "clear outputs" because it is source rather than output, and is then one
+`git add` away from being public. The environment the kernel was launched with is the right place.
+
+### If you are presenting this
+
+**The live benchmark cell needs no key at all.** Notebook section 7c scores a small slice against
+your own Spark, using the same `client` as every other cell — `api_key="not-needed"`. Only
+`run_benchmark.py` reaching the four *hosted* models needs a credential, and that is a ten-minute
+sweep you would run beforehand, not on stage.
+
+So the sequence that keeps a key off screen entirely is: set it in a terminal before the session,
+run the full sweep, and let the notebook read the resulting `results/summary.json`. On the day,
+nothing you run in front of anyone touches a credential.
+
+Three places a key leaks that people forget: **terminal scrollback** (if you exported it earlier in
+the window you are now sharing, scrolling up reveals it), **`env` or `printenv`** run on camera,
+and **shell history** recalled with an up-arrow in front of an audience.
 
 **Verify the dataset needs no token** — takes a few seconds:
 
@@ -363,7 +399,7 @@ numbers reproduce.
 ./run_benchmark.py --only spark --n 40
 
 # all five endpoints (needs NVIDIA_API_KEY for the hosted ones)
-export NVIDIA_API_KEY=nvapi-...
+read -rs -p "NVIDIA_API_KEY: " NVIDIA_API_KEY && export NVIDIA_API_KEY && echo
 ./run_benchmark.py --n 40
 ./make_chart.py
 ```
