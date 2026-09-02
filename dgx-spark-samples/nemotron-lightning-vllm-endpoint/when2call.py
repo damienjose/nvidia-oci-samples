@@ -70,16 +70,60 @@ def pct(x: float) -> str:
 # Dataset
 # --------------------------------------------------------------------------
 
+# Filled in by load_examples() so a run can record exactly what it scored.
+# The Hub layout has already changed once under this sample -- what was config
+# "mcq" with a "test" split is now a config named "test" -- and accuracy numbers
+# do not carry across that any more than they carry across a weights change.
+LAST_DATASET: dict = {}
+
+
 def load_examples(n_per_label: int = 40, seed: int = 0,
-                  split: str = "test", config: str = "mcq") -> list[dict]:
+                  split: str | None = None, config: str | None = None,
+                  verbose: bool = True) -> list[dict]:
     """Load When2Call, stratified equally across the three labels.
 
-    Field names on the Hub have moved between revisions; we normalise here and
-    fail loudly rather than silently mis-scoring.
+    Both the Hub layout and the field names have moved between revisions, so
+    resolve the config and split from what the dataset actually exposes rather
+    than hard-coding names, then normalise fields -- and say out loud which
+    config and split were used, because that is part of the result.
     """
-    from datasets import load_dataset
+    from datasets import (load_dataset, get_dataset_config_names,
+                          get_dataset_split_names)
 
-    ds = load_dataset("nvidia/When2Call", config, split=split)
+    repo = "nvidia/When2Call"
+    available = get_dataset_config_names(repo)
+    if not available:
+        raise RuntimeError(f"{repo} exposes no configs")
+
+    # Caller's choice first, then the historical name, then anything that is
+    # not obviously a training split.
+    order = [c for c in (config, "mcq", "test") if c and c in available]
+    order += [c for c in available if c not in order and "train" not in c]
+    order += [c for c in available if c not in order]
+
+    ds = chosen = None
+    last_err: Exception | None = None
+    for cfg in order:
+        try:
+            splits = get_dataset_split_names(repo, cfg)
+        except Exception as e:                                  # noqa: BLE001
+            last_err = e
+            continue
+        preferred = [s for s in (split, "test", "validation", "train") if s in splits]
+        for sp in preferred + [s for s in splits if s not in preferred]:
+            try:
+                ds = load_dataset(repo, cfg, split=sp)
+                chosen = (cfg, sp)
+                break
+            except Exception as e:                              # noqa: BLE001
+                last_err = e
+        if ds is not None:
+            break
+
+    if ds is None:
+        raise RuntimeError(
+            f"Could not load {repo}. Configs offered: {available}. "
+            f"Last error: {last_err}")
 
     def norm(row: dict) -> dict | None:
         label = row.get("label") or row.get("answer") or row.get("category")
@@ -97,11 +141,24 @@ def load_examples(n_per_label: int = 40, seed: int = 0,
 
     rows = [r for r in (norm(dict(x)) for x in ds) if r]
     if not rows:
+        cols = list(ds.features) if hasattr(ds, "features") else "unknown"
         raise RuntimeError(
-            "No usable rows after normalisation. The dataset schema has changed -- "
-            "inspect load_dataset('nvidia/When2Call', 'mcq', split='test')[0] and "
-            "extend norm() in when2call.py."
-        )
+            f"Loaded {repo} config={chosen[0]!r} split={chosen[1]!r} "
+            f"({len(ds)} rows) but none survived normalisation. Columns are "
+            f"{cols}; extend norm() in when2call.py to match.")
+
+    counts = {lab: sum(1 for r in rows if r["label"] == lab) for lab in LABELS}
+    LAST_DATASET.clear()
+    LAST_DATASET.update({"repo": repo, "config": chosen[0], "split": chosen[1],
+                         "usable_rows": len(rows), "by_label": counts})
+    if verbose:
+        print(f"  {repo} config={chosen[0]!r} split={chosen[1]!r} — "
+              f"{len(rows)} usable rows {counts}")
+
+    short = [f"{lab} has {n}" for lab, n in counts.items() if n < n_per_label]
+    if short and verbose:
+        print(f"  NOTE: fewer rows than requested for {'; '.join(short)}. "
+              f"Strata will be uneven, so read the counts, not just the rates.")
 
     rng = random.Random(seed)
     out: list[dict] = []

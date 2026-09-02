@@ -213,6 +213,7 @@ def sweep(config=None, n_per_label=40, only=None, concurrency=None,
     RESULTS.mkdir(exist_ok=True)
     result = {"n_examples": len(examples), "max_tokens": max_tokens,
               "seed": seed, "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
+              "dataset": dict(w2c.LAST_DATASET),
               "models": [], "failed": []}
 
     # Resume: an endpoint already recorded in `out` is not re-run. A sweep can
