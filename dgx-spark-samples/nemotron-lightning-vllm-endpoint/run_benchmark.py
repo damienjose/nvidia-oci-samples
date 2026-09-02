@@ -138,12 +138,16 @@ def run_endpoint(spec: dict, examples: list[dict], max_tokens: int,
     # think. Let an endpoint raise its own.
     budget = spec.get("max_tokens", max_tokens)
     extra = spec.get("extra_body")
+    # Free-tier endpoints queue. One endpoint measured 264 s for a 17-token
+    # reply -- that is wait, not generation -- so a fixed 180 s timeout would
+    # fail it on every example and report a working model as dead.
+    per_req_timeout = spec.get("timeout", 180)
 
     def one(ex):
         msg, finish, err = call_with_backoff(
             client, model=spec["model"], messages=w2c.build_messages(ex),
             tools=w2c.to_openai_tools(ex["tools"]), max_tokens=budget,
-            extra_body=extra)
+            extra_body=extra, timeout=per_req_timeout)
         if err:
             return w2c.Record(label=ex["label"], called=False, tool_name=None,
                               gold_tool=ex.get("gold_tool"), has_text=False,
@@ -179,7 +183,8 @@ def run_endpoint(spec: dict, examples: list[dict], max_tokens: int,
 # --------------------------------------------------------------------------
 
 def sweep(config=None, n_per_label=40, only=None, concurrency=None,
-          max_tokens=3072, seed=0, out=None, save_raw=False, verbose=True):
+          max_tokens=3072, seed=0, out=None, save_raw=False, resume=False,
+          verbose=True):
     """Run the sweep and return the summary dict, also writing it to `out`.
 
     Factored out of main() so a notebook can call it directly rather than
@@ -210,6 +215,28 @@ def sweep(config=None, n_per_label=40, only=None, concurrency=None,
               "seed": seed, "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
               "models": [], "failed": []}
 
+    # Resume: an endpoint already recorded in `out` is not re-run. A sweep can
+    # take hours when a hosted endpoint is queueing, and losing four completed
+    # models because the fifth timed out -- or because an SSH session dropped
+    # -- is the expensive failure here, not the fifth model itself.
+    if resume and out.exists():
+        prior = json.loads(out.read_text())
+        done = {m["name"] for m in prior.get("models", [])} | \
+               {f["name"] for f in prior.get("failed", [])}
+        if done:
+            result["models"] = prior.get("models", [])
+            result["failed"] = prior.get("failed", [])
+            before = len(specs)
+            specs = [s for s in specs if s["name"] not in done]
+            if verbose:
+                print(f"  resuming: {before - len(specs)} endpoint(s) already "
+                      f"in {out.name}, {len(specs)} to go\n")
+
+    def checkpoint():
+        """Write what we have so far. Called after every endpoint, so an
+        interrupted sweep still leaves usable results on disk."""
+        out.write_text(json.dumps(result, indent=2))
+
     for spec in specs:
         if verbose:
             print(f"  {spec['name']} ({spec.get('location','')}) ...", flush=True)
@@ -219,6 +246,7 @@ def sweep(config=None, n_per_label=40, only=None, concurrency=None,
             if verbose:
                 print(f"    SKIPPED — {err}\n")
             result["failed"].append({"name": spec["name"], "reason": err})
+            checkpoint()
             continue
         summary, records = got
         result["models"].append(summary)
@@ -227,8 +255,9 @@ def sweep(config=None, n_per_label=40, only=None, concurrency=None,
         if save_raw:
             raw = RESULTS / f"raw-{spec['name']}.jsonl"
             raw.write_text("\n".join(json.dumps(asdict(r)) for r in records))
+        checkpoint()
 
-    out.write_text(json.dumps(result, indent=2))
+    checkpoint()
     if verbose:
         print(f"\nWrote {out}")
         if result["failed"]:
@@ -256,12 +285,17 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=str(RESULTS / "summary.json"))
     ap.add_argument("--save-raw", action="store_true")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip endpoints already present in --out. Results are "
+                         "checkpointed after every endpoint, so an interrupted "
+                         "sweep picks up where it stopped.")
     args = ap.parse_args()
 
     try:
         sweep(config=args.config, n_per_label=args.n, only=args.only,
               concurrency=args.concurrency, max_tokens=args.max_tokens,
-              seed=args.seed, out=args.out, save_raw=args.save_raw)
+              seed=args.seed, out=args.out, save_raw=args.save_raw,
+              resume=args.resume)
     except ValueError as e:
         print(e, file=sys.stderr)
         return 2

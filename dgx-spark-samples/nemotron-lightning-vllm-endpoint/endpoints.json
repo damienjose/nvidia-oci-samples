@@ -17,9 +17,11 @@
     "gateway rate limit and four of eight models returned HTTP 429 on every call.",
     "The free catalog tier is rate limited too, so keep this modest.",
     "",
-    "max_tokens is per-endpoint. Every model here reasons before answering, and a",
-    "budget spent thinking never reaches the tool call -- which scores identically to",
-    "deciding not to call. Raise it per model rather than globally."
+    "max_tokens, concurrency and timeout are all per-endpoint. Free-tier catalog",
+    "endpoints queue: one measured 264 s to return 17 tokens, which is wait rather",
+    "than generation. For those, raise concurrency to overlap the waits and raise",
+    "timeout so a queue length is not mistaken for a dead model. Lowering max_tokens",
+    "does not help when the time is spent queueing."
   ],
   "endpoints": [
     {
@@ -38,7 +40,8 @@
       "api_key_env": "NVIDIA_API_KEY",
       "concurrency": 2,
       "max_tokens": 8192,
-      "_note": "The control: same model as the Spark endpoint, someone else's hardware."
+      "_note": "The control: same model as the Spark endpoint, someone else's hardware.",
+      "timeout": 300
     },
     {
       "name": "gpt-oss-120b",
@@ -47,7 +50,8 @@
       "model": "openai/gpt-oss-120b",
       "api_key_env": "NVIDIA_API_KEY",
       "concurrency": 2,
-      "max_tokens": 4096
+      "max_tokens": 4096,
+      "timeout": 300
     },
     {
       "name": "gemma-4-31b",
@@ -55,9 +59,10 @@
       "base_url": "https://integrate.api.nvidia.com/v1",
       "model": "google/gemma-4-31b-it",
       "api_key_env": "NVIDIA_API_KEY",
-      "concurrency": 2,
+      "concurrency": 8,
       "max_tokens": 8192,
-      "_note": "Dense 33B. The efficiency contrast against a 30B-A3B MoE."
+      "_note": "Dense 33B. Measured 264 s for a trivial request on the free tier -- queue, not compute. High concurrency overlaps the waits.",
+      "timeout": 600
     },
     {
       "name": "kimi-k3",
@@ -65,8 +70,10 @@
       "base_url": "https://integrate.api.nvidia.com/v1",
       "model": "moonshotai/kimi-k3",
       "api_key_env": "NVIDIA_API_KEY",
-      "concurrency": 1,
-      "max_tokens": 8192
+      "concurrency": 8,
+      "max_tokens": 8192,
+      "timeout": 600,
+      "_note": "Timed out at 120 s on preflight. Same queue behaviour as gemma."
     }
   ]
 }

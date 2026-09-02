@@ -453,6 +453,37 @@ Two things the harness will not do for you:
 - **A model that returns no data is reported as "no data", never as a low score.** A
   rate-limited endpoint is a missing measurement.
 
+### Run it somewhere a dropped SSH session cannot kill it
+
+`docker run` in the foreground proxies signals to the container, so if the SSH session running
+`serve.sh` drops, the endpoint goes with it — and `--rm` means the container is gone, not stopped.
+The same applies to a sweep: an hour of benchmarking dies with the connection.
+
+```bash
+./serve.sh --detach                       # container survives the shell
+docker logs -f vllm-nemotron              # follow it; Ctrl-C detaches, does not stop
+
+nohup ./run_benchmark.py --config endpoints.json --n 40 --save-raw \
+      > ~/bench.log 2>&1 &                # sweep survives the shell
+tail -f ~/bench.log
+```
+
+`tmux` or `screen` work equally well and let you reattach. Whichever you pick, do not run a
+long job in a bare foreground SSH session — especially not the endpoint you are about to demo.
+
+### Free-tier endpoints queue, and the wait is not generation time
+
+Measured on `integrate.api.nvidia.com`: one model returned **17 tokens in 264 seconds**. That is
+not a slow model, it is a queue on a shared free-tier endpoint. Two consequences:
+
+- **Lowering `max_tokens` does not help.** Almost none of that time was generation.
+- **Raising `concurrency` does.** Requests wait in parallel rather than in series. `endpoints.json`
+  sets high concurrency and long timeouts for the endpoints that behave this way, and the retry
+  backoff absorbs the 429s that come with it.
+
+`preflight.py` projects a single request's latency onto the full sweep, so you find out that an
+endpoint would take four hours before you start it, rather than forty minutes in.
+
 ### Rate limits are the main failure mode
 
 An earlier sweep issued 960 requests at concurrency 4 and tripped the hosted gateway:

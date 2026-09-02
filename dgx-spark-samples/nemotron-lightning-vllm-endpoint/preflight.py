@@ -57,7 +57,15 @@ PROBE_PROMPT = "What is the weather in Austin, Texas right now?"
 OK, WARN, FAIL, SKIP = "ok", "warn", "FAIL", "skip"
 
 
-def check(spec: dict, timeout: int = 120) -> dict:
+# A sweep is 3 x n examples per endpoint, run `concurrency` at a time. If one
+# request takes t seconds, that endpoint alone costs roughly
+# (3n / concurrency) * t. At n=40 and concurrency 2 a 30 s request is a
+# half-hour; a 264 s request is most of a day.
+SLOW_REQUEST_S = 25.0
+SWEEP_N_PER_LABEL = 40
+
+
+def check(spec: dict, timeout: int | None = None) -> dict:
     """One endpoint, one request. Returns a verdict dict."""
     from openai import OpenAI
 
@@ -75,6 +83,7 @@ def check(spec: dict, timeout: int = 120) -> dict:
     else:
         api_key = "not-needed"
 
+    timeout = timeout if timeout is not None else spec.get("timeout", 120)
     client = OpenAI(base_url=spec["base_url"], api_key=api_key, timeout=timeout)
     configured = spec.get("model")
 
@@ -123,6 +132,11 @@ def check(spec: dict, timeout: int = 120) -> dict:
         if "429" in msg:
             r["notes"].append("429 rate limited on a single request — lower "
                               "concurrency will not save the sweep")
+        elif "Timeout" in type(e).__name__:
+            r["notes"].append(
+                f"timed out after {timeout}s. Raise \"timeout\" for this "
+                f"endpoint in endpoints.json -- free-tier endpoints queue, and "
+                f"a timeout here is a queue length, not a broken model.")
         elif "tool" in msg.lower():
             r["notes"].append(f"rejected the tools parameter: {msg[:110]}")
         else:
@@ -162,7 +176,27 @@ def check(spec: dict, timeout: int = 120) -> dict:
                 "no structured tool_calls — every When2Call example would "
                 f"score as 'decided not to call'. Returned text instead: {body!r}")
 
-    # --- 3. budget headroom -------------------------------------------------
+    # --- 3. latency, projected onto the full sweep --------------------------
+    # A slow endpoint is not a broken one, but it can make the sweep
+    # impractical, and that is worth knowing before you start rather than
+    # forty minutes in.
+    lat = r["latency_s"]
+    if lat >= SLOW_REQUEST_S:
+        rounds = (3 * SWEEP_N_PER_LABEL) / max(1, spec.get("concurrency", 2))
+        mins = rounds * lat / 60
+        r["verdict"] = WARN if r["verdict"] == OK else r["verdict"]
+        unit = f"{mins/60:.1f} hours" if mins > 90 else f"{mins:.0f} minutes"
+        r["notes"].append(
+            f"{lat:.0f}s for a trivial request. At n={SWEEP_N_PER_LABEL} and "
+            f"concurrency {spec.get('concurrency', 2)} this endpoint alone "
+            f"would take about {unit}.")
+        if used and used < 60:
+            r["notes"].append(
+                f"only {used} tokens generated, so that time is queueing on a "
+                f"shared endpoint, not compute. Raising concurrency overlaps "
+                f"the waits; lowering max_tokens will not help.")
+
+    # --- 4. budget headroom -------------------------------------------------
     if r["verdict"] == OK and used and used > 0.8 * budget:
         r["verdict"] = WARN
         r["notes"].append(
