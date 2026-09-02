@@ -22,7 +22,18 @@ failures produce a *plausible-looking number* rather than an error:
     never arrives. Recall is understated and tool-selection accuracy is
     flattered, because fewer calls were attempted.
 
-This script sends exactly one request per endpoint and reports what came back.
+By default it sends one synthetic request per endpoint. That is fast but it
+tests a hand-written, spec-compliant tool -- which is exactly what the real
+payload is not. When2Call carries BFCL tool names with dots in them and
+parameter schemas using Python type names, and a gateway that rejects those
+will pass this probe and then 400 on all 120 examples.
+
+So use --real, which sends actual dataset examples through the same
+build_messages/to_openai_tools path the sweep uses. A few minutes across every
+endpoint, and it validates the payload that will actually be sent.
+
+    ./preflight.py --real 2        # 2 examples per label, per endpoint
+
 It never prints an API key.
 """
 
@@ -65,8 +76,49 @@ SLOW_REQUEST_S = 25.0
 SWEEP_N_PER_LABEL = 40
 
 
-def check(spec: dict, timeout: int | None = None) -> dict:
-    """One endpoint, one request. Returns a verdict dict."""
+def check_real(spec: dict, examples: list, client, model_id: str) -> dict:
+    """Send real dataset examples through the exact path the sweep uses.
+
+    Reports per-example outcomes rather than aggregate accuracy -- with a
+    handful of examples the rates are meaningless, but "was the payload
+    accepted" and "did a structured call come back" are not.
+    """
+    import when2call as w2c
+    from concurrent.futures import ThreadPoolExecutor
+
+    budget = spec.get("max_tokens", 3072)
+    per_timeout = spec.get("timeout", 180)
+    workers = min(spec.get("concurrency", 2), len(examples))
+
+    def one(ex):
+        t0 = time.perf_counter()
+        try:
+            resp = client.chat.completions.create(
+                model=model_id, messages=w2c.build_messages(ex),
+                tools=w2c.to_openai_tools(ex["tools"]), tool_choice="auto",
+                max_tokens=budget, temperature=0.0, timeout=per_timeout,
+                **({"extra_body": spec["extra_body"]} if spec.get("extra_body") else {}),
+            )
+        except Exception as e:                                  # noqa: BLE001
+            return {"label": ex["label"], "error": f"{type(e).__name__}: {e}",
+                    "elapsed": time.perf_counter() - t0}
+        m = resp.choices[0].message
+        called = bool(m.tool_calls)
+        return {"label": ex["label"], "error": None,
+                "called": called,
+                "tool": m.tool_calls[0].function.name if called else None,
+                "gold": ex.get("gold_tool"),
+                "finish": resp.choices[0].finish_reason,
+                "tokens": getattr(resp.usage, "completion_tokens", None),
+                "elapsed": time.perf_counter() - t0}
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        return {"results": list(pool.map(one, examples))}
+
+
+def check(spec: dict, timeout: int | None = None,
+          examples: list | None = None) -> dict:
+    """One endpoint. Returns a verdict dict."""
     from openai import OpenAI
 
     name = spec["name"]
@@ -115,7 +167,55 @@ def check(spec: dict, timeout: int | None = None) -> dict:
                 f"'{configured}' not offered ({len(served)} models).{hint}")
             return r
 
-    # --- 2. does it return a *structured* tool call? ------------------------
+    # --- 2a. real dataset examples, if asked for ----------------------------
+    if examples:
+        got = check_real(spec, examples, client, configured)["results"]
+        errs = [g for g in got if g["error"]]
+        ok_ = [g for g in got if not g["error"]]
+        r["n_real"] = len(got)
+        r["n_ok"] = len(ok_)
+        r["latency_s"] = round(sum(g["elapsed"] for g in got) / len(got), 2)
+
+        if len(errs) == len(got):
+            r["verdict"] = FAIL
+            first = errs[0]["error"]
+            r["notes"].append(f"all {len(got)} real examples failed: {first[:150]}")
+            if "400" in first or "invalid" in first.lower():
+                r["notes"].append(
+                    "a 400 on the real payload but not on the synthetic probe means "
+                    "the dataset's tool schemas are being rejected, not the model.")
+            return r
+        if errs:
+            r["verdict"] = WARN
+            r["notes"].append(f"{len(errs)}/{len(got)} failed: {errs[0]['error'][:110]}")
+
+        called = [g for g in ok_ if g["called"]]
+        r["called"] = f"{len(called)}/{len(ok_)}"
+        gold_pool = [g for g in called if g["label"] == "tool_call" and g["gold"]]
+        if gold_pool:
+            hits = sum(g["tool"] == g["gold"] for g in gold_pool)
+            r["gold_match"] = f"{hits}/{len(gold_pool)}"
+            if hits == 0:
+                r["verdict"] = FAIL
+                g = gold_pool[0]
+                r["notes"].append(
+                    f"tool names never match gold: returned {g['tool']!r} vs gold "
+                    f"{str(g['gold'])[:60]!r}. Tool-selection accuracy would read 0% "
+                    f"for every model.")
+        truncated = [g for g in ok_ if g["finish"] == "length"]
+        if truncated:
+            r["verdict"] = WARN if r["verdict"] == OK else r["verdict"]
+            r["notes"].append(
+                f"{len(truncated)}/{len(ok_)} hit the {spec.get('max_tokens', 3072)}-token "
+                f"budget. Raise max_tokens for this endpoint.")
+
+        lat = r["latency_s"]
+        rounds = (3 * SWEEP_N_PER_LABEL) / max(1, spec.get("concurrency", 2))
+        mins = rounds * lat / 60
+        r["sweep_estimate"] = (f"{mins/60:.1f}h" if mins > 90 else f"{mins:.0f}m")
+        return r
+
+    # --- 2b. synthetic probe ------------------------------------------------
     budget = spec.get("max_tokens", 3072)
     t0 = time.perf_counter()
     try:
@@ -211,6 +311,14 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=str(HERE / "endpoints.json"))
     ap.add_argument("--only", action="append", help="check only these (repeatable)")
+    ap.add_argument("--real", type=int, default=0, metavar="N",
+                    help="send N real When2Call examples per label through the "
+                         "exact path the sweep uses, instead of a synthetic "
+                         "probe. This is what catches a gateway rejecting the "
+                         "dataset's tool schemas.")
+    ap.add_argument("--seed", type=int, default=99,
+                    help="example seed. Deliberately not the sweep's default, "
+                         "so preflight and the sweep do not share examples.")
     args = ap.parse_args()
 
     specs = json.loads(Path(args.config).read_text())["endpoints"]
@@ -220,13 +328,31 @@ def main() -> int:
         print("No endpoints selected.", file=sys.stderr)
         return 2
 
-    print(f"Preflight: {len(specs)} endpoint(s), one request each.\n")
+    examples = None
+    if args.real:
+        import when2call as w2c
+        examples = w2c.load_examples(n_per_label=args.real, seed=args.seed)
+        print(f"Preflight: {len(specs)} endpoint(s), {len(examples)} real "
+              f"When2Call examples each.\n")
+    else:
+        print(f"Preflight: {len(specs)} endpoint(s), one synthetic request each.")
+        print("  (--real N sends actual dataset examples; a synthetic tool cannot "
+              "catch\n   a gateway rejecting the dataset's own schemas.)\n")
+
     results = []
     for spec in specs:
         print(f"  {spec['name']:<18} ...", end=" ", flush=True)
-        r = check(spec)
+        r = check(spec, examples=examples)
         results.append(r)
         bits = []
+        if r.get("n_real"):
+            bits.append(f"{r['n_ok']}/{r['n_real']} ok")
+        if r.get("called"):
+            bits.append(f"called {r['called']}")
+        if r.get("gold_match"):
+            bits.append(f"gold {r['gold_match']}")
+        if r.get("sweep_estimate"):
+            bits.append(f"sweep ~{r['sweep_estimate']}")
         if r.get("tool"):
             bits.append(f"tool_calls -> {r['tool']}")
         if r.get("tokens") is not None:
