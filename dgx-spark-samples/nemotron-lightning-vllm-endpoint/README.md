@@ -159,6 +159,31 @@ Two details that matter:
   Without it Jupyter listens on every interface, and anyone on the same network who can read the
   token has your notebook.
 
+### Nothing in this sample needs editing
+
+Clone it, run `setup.sh`, run `serve.sh`, open `demo.ipynb`. There is no configuration step and
+no file to change first.
+
+`demo.ipynb` uses `base_url="http://localhost:8000/v1"`, and that is correct **because the
+notebook runs on the DGX Spark itself** — the kernel and vLLM are on the same machine, so port
+8000 is genuinely local. You may be *viewing* JupyterLab through a tunnel from a laptop, but the
+Python is executing on the Spark.
+
+**The one case where you do change it:** if you run the notebook (or any other client) on your
+laptop rather than on the Spark, `localhost` points at the wrong machine. Use the device name:
+
+```python
+BASE_URL = "http://spark-xxxx.local:8000/v1"     # your device's name
+```
+
+The `.local` suffix is required — DGX Spark advertises over mDNS, and the bare hostname will not
+resolve. Use the IP address instead if mDNS is blocked on your network. You would also need to
+reach port 8000 from that machine, either directly or with `ssh -N -L 8000:localhost:8000`.
+
+Separately, and not needed to run any of this: the `base_url` line is also how you point an
+application *you already have* at this endpoint. That is covered in section 3 of the notebook, and
+it is about your own code on another day — not a step in getting this sample working.
+
 ## Quickstart
 
 Verify local prerequisites:
@@ -342,7 +367,13 @@ references `NVIDIA_API_KEY` by name, not by value, so nothing secret is committe
 Fine alone at a desk; not fine if you are recording, pairing, or presenting. Two better ways:
 
 ```bash
-# Prompted, never echoed, never in history
+# Prompted, never echoed, never in history. bash and zsh disagree on read -p,
+# so this uses getpass, which behaves the same in both.
+NVIDIA_API_KEY=$(python3 -c 'import getpass; print(getpass.getpass("NVIDIA_API_KEY: "))')
+export NVIDIA_API_KEY
+
+# bash only -- in zsh, read -p means "read from a coprocess" and this fails
+# with "read: -p: no coprocess"
 read -rs -p "NVIDIA_API_KEY: " NVIDIA_API_KEY && export NVIDIA_API_KEY && echo
 
 # Or keep it in a file outside the repo, readable only by you
@@ -687,6 +718,44 @@ you write your own `docker run`, check yours first:
 docker inspect vllm/vllm-openai:v0.27.1 \
   --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}'
 ```
+
+### The dataset's tool schemas are not OpenAI-compliant
+
+The single most expensive bug in building this sample, because it does not look like a bug.
+
+When2Call's tools come from BFCL and carry two things a strict gateway rejects:
+
+| In the dataset | Why it fails |
+| --- | --- |
+| `cmd_controller.exe`, `api_token_api.APITokenApi.get_api_tokens` | Function names must match `^[A-Za-z0-9_-]{1,64}$`. Dots are illegal. |
+| `"type": "dict"`, `"type": "str"` | JSON Schema wants `object` and `string`. These are Python type names. |
+
+vLLM accepts both. `integrate.api.nvidia.com` does not. So a comparison built on the raw dataset
+scores the local endpoint perfectly and returns `400` on every one of 120 examples for hosted
+models — **a schema-validation difference wearing the costume of a model result.** Had those
+models merely been lenient-but-worse, the published gap would have been about input validation
+rather than about the models.
+
+`normalise_row()` repairs both once, before anything is sent, so every endpoint receives identical
+valid tools.
+
+### `target_tool` is a spec, not a name
+
+Related, and equally quiet. The dataset stores the gold tool the same way it stores the tool list —
+as a JSON string of the whole function spec:
+
+```
+returned: find_flights   gold: {"name": "find_flights", "description": "Searches for ...
+```
+
+Comparing that against the name a model returns never matches, so **tool-selection accuracy reads
+0% for every model** — which looks like a finding about models that cannot pick the right tool,
+and is the opposite of the truth. `tool_name_of()` extracts the name from any of the four shapes
+the field has taken.
+
+**The general lesson, and why `preflight.py --real` exists:** a probe built from a hand-written,
+spec-compliant tool passes on every endpoint and tells you nothing. Send the payload you are
+actually going to send.
 
 ### Your vLLM release has to know the architecture
 
