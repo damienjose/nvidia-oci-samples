@@ -111,50 +111,75 @@ fi
 # recognising the architecture, which sends people off upgrading Transformers --
 # the wrong fix, and a slow way to find that out.
 #
-# So ask the container directly, before committing to a five-minute wait. This
-# probes vLLM's own config registry rather than a version number, because the
-# known-good nightly (0.26.1rc1.dev403) sorts below the pinned release and a
-# version gate would wrongly reject it.
+# So reproduce that exact config load, offline against the cached weights,
+# before committing to a five-minute wait.
 #
-# Inconclusive is not failure: if the probe itself errors, warn and continue.
-if [[ -z "${SKIP_PRECHECK:-}" ]]; then
-  ARCH_TYPE="$(sed -n 's/.*"model_type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-    "$HF_CACHE"/hub/models--${MODEL//\//--}/snapshots/*/config.json 2>/dev/null | head -1)"
-  ARCH_TYPE="${ARCH_TYPE:-nemotron_h}"
-
-  PROBE="$(docker run --rm --entrypoint python3 "$IMAGE" -c "
-from vllm.transformers_utils.config import _CONFIG_REGISTRY
-print('yes' if '${ARCH_TYPE}' in _CONFIG_REGISTRY else 'no')
+# Two rules this probe follows, learned by getting it wrong:
+#
+#   1. Do not infer support from vLLM's own _CONFIG_REGISTRY. That registry is
+#      the *fallback* for architectures Transformers does not know. A model
+#      Transformers handles natively is absent from it and works fine, so an
+#      absence test reports healthy images as broken.
+#   2. Report "no" only on the specific architecture-recognition error. Any
+#      other failure -- API drift, no cached weights, no network -- is
+#      inconclusive, and an inconclusive probe must not block a working setup.
+if [[ -z "${SKIP_PRECHECK:-}" && -d "$HF_CACHE" ]]; then
+  PROBE="$(docker run --rm \
+    -v "${HF_CACHE}:/root/.cache/huggingface" \
+    -e HF_HUB_OFFLINE=1 \
+    --entrypoint python3 "$IMAGE" -c "
+import sys
+SENTINEL = 'does not recognize this architecture'
+msg = ''
+try:
+    from vllm.transformers_utils.config import get_config
+    get_config('${MODEL}', trust_remote_code=False)
+    print('yes'); sys.exit()
+except TypeError:
+    pass                      # signature drift across releases; fall through
+except Exception as e:
+    msg = str(e)
+if SENTINEL in msg:
+    print('no'); sys.exit()
+try:
+    from transformers import AutoConfig
+    AutoConfig.from_pretrained('${MODEL}')
+    print('yes')
+except Exception as e:
+    print('no' if SENTINEL in str(e) else 'unknown')
 " 2>/dev/null | tail -1)"
 
   if [[ "$PROBE" == "no" ]]; then
     cat >&2 <<EOF
 
-ERROR: this vLLM image does not support the '${ARCH_TYPE}' architecture.
+ERROR: this vLLM image cannot load this model's architecture.
 
   Image: ${IMAGE}
+  Model: ${MODEL}
 
 It would start, read the config, and fail about ten seconds in with:
 
   Value error, The checkpoint you are trying to load has model type
-  \`${ARCH_TYPE}\` but Transformers does not recognize this architecture.
+  \`nemotron_h\` but Transformers does not recognize this architecture.
 
 Ignore that message's advice. Upgrading Transformers will not fix it, and
 --trust-remote-code cannot substitute: this checkpoint has no auto_map, so
 there is no remote code to load. Architecture support is compiled into vLLM.
 
-Use a vLLM release that carries it:
+Use a newer vLLM release -- the tag NVIDIA publishes for this model is
+v0.27.1, and anything later should also carry it:
 
-    VLLM_IMAGE=vllm/vllm-openai:v0.27.1 ./serve.sh
+    VLLM_IMAGE=vllm/vllm-openai:<newer-tag> ./serve.sh
 
-Or, if you are certain this image is fine and the probe is wrong:
+To bypass this check entirely:
 
     SKIP_PRECHECK=1 ./serve.sh
 
 EOF
     exit 1
   elif [[ "$PROBE" != "yes" ]]; then
-    echo "NOTE: could not verify '${ARCH_TYPE}' support in this image. Continuing."
+    echo "NOTE: could not verify architecture support in this image (probe said"
+    echo "      '${PROBE:-nothing}'). Continuing -- this is not a failure signal."
     echo
   fi
 fi

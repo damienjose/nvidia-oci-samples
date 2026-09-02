@@ -489,7 +489,8 @@ Hugging Face text and is **not** the fix here. Two things it does not tell you:
    a running container gets you a different failure, not a working server.
 
 The fix is to move the *vLLM release* forward. This sample pins `v0.27.1`, which is the release
-carrying day-0 support for Nemotron 3.5 Lightning and the tag NVIDIA publishes for it.
+carrying day-0 support for Nemotron 3.5 Lightning, and the tag the Nemotron team published for it
+at release alongside TensorRT-LLM `1.3.0rc24` and SGLang at tip of tree.
 
 `serve.sh` probes for this before starting, so a mismatched image fails in about five seconds with
 an explanation rather than five minutes in with a pydantic traceback. The probe asks vLLM's own
@@ -579,6 +580,8 @@ Open a pull request to `NVIDIA/nvidia-oci-samples:main` and tag the maintainers 
 ## References
 
 - [Model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4) · [build.nvidia.com](https://build.nvidia.com/nvidia/nemotron-3.5-lightning-30b-a3b)
+- [Day-0 support for Nemotron 3.5 Lightning on vLLM](https://vllm.ai/blog/2026-08-10-nemotron-3-5-lightning-vllm) — the source for `v0.27.1` and the tuned DGX Spark profile
+- [Nemotron 3.5 Lightning vLLM cookbook](https://github.com/NVIDIA-NeMo/Nemotron/blob/main/usage-cookbook/Nemotron-3.5-Lightning/vllm_cookbook.ipynb)
 - [vLLM on DGX Spark playbook](https://build.nvidia.com/spark/vllm)
 - [DGX Spark playbooks](https://build.nvidia.com/spark)
 - [nvidia/When2Call](https://huggingface.co/datasets/nvidia/When2Call) — agentic tool-calling benchmark (CC-BY-4.0)
