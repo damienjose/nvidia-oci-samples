@@ -70,6 +70,60 @@ def pct(x: float) -> str:
 # Dataset
 # --------------------------------------------------------------------------
 
+def parse_tools(tools: Any) -> list[dict] | None:
+    """Normalise the dataset's tool spec to a list of dicts.
+
+    Three shapes have appeared across revisions and all three are accepted:
+      * a list of JSON strings, one per function   <- current
+      * a JSON string containing a list
+      * a plain list of dicts
+    Returns None when nothing usable comes out, so the caller can drop the row
+    rather than send the model an empty toolset -- with no tools to call, every
+    example would look like 'cannot_answer' regardless of the model.
+    """
+    if tools is None:
+        return None
+    if isinstance(tools, str):
+        try:
+            tools = json.loads(tools)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(tools, (list, tuple)):
+        return None
+    out: list[dict] = []
+    for t in tools:
+        if isinstance(t, str):
+            try:
+                t = json.loads(t)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(t, dict):
+            out.append(t)
+    return out or None
+
+
+def normalise_row(row: dict) -> dict | None:
+    """One dataset row -> the shape the harness uses, or None if unusable.
+
+    Field names have moved across revisions, so every known spelling is tried.
+    The current test/mcq and test/llm_judge splits carry the class in
+    `correct_answer`, the prompt in `question`, and the gold tool in
+    `target_tool`; earlier revisions used `label`, `query` and `gold_tool`.
+    """
+    label = (row.get("label") or row.get("correct_answer")
+             or row.get("answer") or row.get("category"))
+    query = (row.get("query") or row.get("question")
+             or row.get("user_query"))
+    gold = (row.get("gold_tool") or row.get("target_tool")
+            or row.get("target_function") or row.get("function_name"))
+    tools = parse_tools(row.get("tools") or row.get("functions")
+                        or row.get("available_tools"))
+
+    if label not in LABELS or not query or not tools:
+        return None
+    return {"label": label, "tools": tools, "query": query, "gold_tool": gold}
+
+
 # Filled in by load_examples() so a run can record exactly what it scored.
 # The Hub layout has already changed once under this sample -- what was config
 # "mcq" with a "test" split is now a config named "test" -- and accuracy numbers
@@ -109,7 +163,8 @@ def load_examples(n_per_label: int = 40, seed: int = 0,
         except Exception as e:                                  # noqa: BLE001
             last_err = e
             continue
-        preferred = [s for s in (split, "test", "validation", "train") if s in splits]
+        preferred = [s for s in (split, "mcq", "test", "validation", "train")
+                     if s and s in splits]
         for sp in preferred + [s for s in splits if s not in preferred]:
             try:
                 ds = load_dataset(repo, cfg, split=sp)
@@ -125,27 +180,13 @@ def load_examples(n_per_label: int = 40, seed: int = 0,
             f"Could not load {repo}. Configs offered: {available}. "
             f"Last error: {last_err}")
 
-    def norm(row: dict) -> dict | None:
-        label = row.get("label") or row.get("answer") or row.get("category")
-        tools = row.get("tools") or row.get("functions") or row.get("available_tools")
-        query = row.get("query") or row.get("question") or row.get("user_query")
-        gold = row.get("gold_tool") or row.get("target_function") or row.get("function_name")
-        if isinstance(tools, str):
-            try:
-                tools = json.loads(tools)
-            except json.JSONDecodeError:
-                return None
-        if label not in LABELS or not query or tools is None:
-            return None
-        return {"label": label, "tools": tools, "query": query, "gold_tool": gold}
-
-    rows = [r for r in (norm(dict(x)) for x in ds) if r]
+    rows = [r for r in (normalise_row(dict(x)) for x in ds) if r]
     if not rows:
         cols = list(ds.features) if hasattr(ds, "features") else "unknown"
         raise RuntimeError(
             f"Loaded {repo} config={chosen[0]!r} split={chosen[1]!r} "
             f"({len(ds)} rows) but none survived normalisation. Columns are "
-            f"{cols}; extend norm() in when2call.py to match.")
+            f"{cols}; extend normalise_row() in when2call.py to match.")
 
     counts = {lab: sum(1 for r in rows if r["label"] == lab) for lab in LABELS}
     LAST_DATASET.clear()
