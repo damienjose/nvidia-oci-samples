@@ -412,13 +412,19 @@ and **shell history** recalled with an up-arrow in front of an audience.
 ```bash
 python3 -c "
 from datasets import load_dataset
-d = load_dataset('nvidia/When2Call', 'mcq', split='test')
+d = load_dataset('nvidia/When2Call', 'test', split='mcq')
 print('OK —', len(d), 'rows, no token required')"
 ```
 
 A `401`/`403` or a *"gated dataset"* message means you need to accept the terms on the
 [dataset page](https://huggingface.co/datasets/nvidia/When2Call) while logged in, then export
 `HF_TOKEN`. Otherwise no credential is involved.
+
+A `ValueError` naming the config or the split means the layout moved again. It has moved once
+already — what used to be config `mcq` with a `test` split is now config `test` with an `mcq`
+split, which is why the line above reads back-to-front. `when2call.py` resolves both from the Hub
+at load time rather than hard-coding them, and records what it used in `results/summary.json`, so
+the benchmark keeps working when this one-liner stops.
 
 ## Environment Variables
 

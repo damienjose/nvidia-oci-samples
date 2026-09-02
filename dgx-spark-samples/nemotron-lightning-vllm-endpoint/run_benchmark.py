@@ -252,7 +252,13 @@ def sweep(config=None, n_per_label=40, only=None, concurrency=None,
         print(f"  {len(examples)} examples\n")
 
     RESULTS.mkdir(exist_ok=True)
-    result = {"n_examples": len(examples), "max_tokens": max_tokens,
+    # `max_tokens_default` is the CLI fallback, not what anything actually ran
+    # at -- endpoints.json overrides it per endpoint, and the budget each model
+    # was really given is recorded on that model's own entry. Naming this field
+    # "max_tokens" invited exactly the wrong reading: that every model shared
+    # one budget, when in practice they did not and the comparison depends on
+    # knowing which one had what.
+    result = {"n_examples": len(examples), "max_tokens_default": max_tokens,
               "seed": seed, "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
               "dataset": dict(w2c.LAST_DATASET),
               "models": [], "failed": []}
