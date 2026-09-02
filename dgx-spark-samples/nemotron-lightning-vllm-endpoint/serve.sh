@@ -10,6 +10,9 @@
 # Usage:
 #   ./serve.sh              # foreground
 #   ./serve.sh --detach     # background container, logs via: docker logs -f vllm-nemotron
+#   SKIP_PRECHECK=1 ./...   # skip the architecture-support probe
+#   TUNED=1 ./serve.sh      # add NVIDIA's DGX Spark tuning flags (not the
+#                           # configuration the published numbers came from)
 
 set -euo pipefail
 
@@ -17,11 +20,23 @@ MODEL="${MODEL:-nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4}"
 PORT="${PORT:-8000}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-65536}"
 CONTAINER_NAME="${CONTAINER_NAME:-vllm-nemotron}"
-# vLLM publishes arm64 builds under arch-suffixed tags (`*-aarch64`), but this
-# versioned tag is a multi-arch manifest list containing linux/arm64, so Docker
-# resolves the right platform on GB10 automatically. Pinned and stable rather
-# than a nightly, which can be pruned from the registry without warning.
-IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.19.0-cu130-ubuntu2404}"
+# v0.27.1 is the release that carries day-0 Nemotron 3.5 Lightning support, and
+# it is the tag NVIDIA and the vLLM team publish for this model. Older releases
+# fail at config load with "model type `nemotron_h` but Transformers does not
+# recognize this architecture" -- see Known Issues in README.md.
+#
+# vLLM also publishes arch-suffixed tags (`*-aarch64`), but this one is a
+# multi-arch manifest list containing linux/arm64, so Docker resolves the right
+# platform on GB10 automatically. Pinned rather than a nightly, which can be
+# pruned from the registry without warning.
+#
+# Known-good history on this hardware: the published run used the nightly
+# vLLM 0.26.1rc1.dev403. v0.27.1 is the later stable release of that lineage and
+# is what a customer can still pull today, which a nightly tag is not. If
+# v0.27.1 ever misbehaves and you still have the old nightly in your local
+# Docker cache (check: docker images | grep vllm), you can fall back with
+# VLLM_IMAGE=<that tag> ./serve.sh
+IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.27.1}"
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 
 DETACH_FLAG=""
@@ -90,6 +105,60 @@ EOF
   exit 1
 fi
 
+# Can this image actually load this model? vLLM compiles architecture support
+# in; it is not carried by the checkpoint. An image that predates the model
+# fails ~10s into startup with a pydantic ValidationError about Transformers not
+# recognising the architecture, which sends people off upgrading Transformers --
+# the wrong fix, and a slow way to find that out.
+#
+# So ask the container directly, before committing to a five-minute wait. This
+# probes vLLM's own config registry rather than a version number, because the
+# known-good nightly (0.26.1rc1.dev403) sorts below the pinned release and a
+# version gate would wrongly reject it.
+#
+# Inconclusive is not failure: if the probe itself errors, warn and continue.
+if [[ -z "${SKIP_PRECHECK:-}" ]]; then
+  ARCH_TYPE="$(sed -n 's/.*"model_type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$HF_CACHE"/hub/models--${MODEL//\//--}/snapshots/*/config.json 2>/dev/null | head -1)"
+  ARCH_TYPE="${ARCH_TYPE:-nemotron_h}"
+
+  PROBE="$(docker run --rm --entrypoint python3 "$IMAGE" -c "
+from vllm.transformers_utils.config import _CONFIG_REGISTRY
+print('yes' if '${ARCH_TYPE}' in _CONFIG_REGISTRY else 'no')
+" 2>/dev/null | tail -1)"
+
+  if [[ "$PROBE" == "no" ]]; then
+    cat >&2 <<EOF
+
+ERROR: this vLLM image does not support the '${ARCH_TYPE}' architecture.
+
+  Image: ${IMAGE}
+
+It would start, read the config, and fail about ten seconds in with:
+
+  Value error, The checkpoint you are trying to load has model type
+  \`${ARCH_TYPE}\` but Transformers does not recognize this architecture.
+
+Ignore that message's advice. Upgrading Transformers will not fix it, and
+--trust-remote-code cannot substitute: this checkpoint has no auto_map, so
+there is no remote code to load. Architecture support is compiled into vLLM.
+
+Use a vLLM release that carries it:
+
+    VLLM_IMAGE=vllm/vllm-openai:v0.27.1 ./serve.sh
+
+Or, if you are certain this image is fine and the probe is wrong:
+
+    SKIP_PRECHECK=1 ./serve.sh
+
+EOF
+    exit 1
+  elif [[ "$PROBE" != "yes" ]]; then
+    echo "NOTE: could not verify '${ARCH_TYPE}' support in this image. Continuing."
+    echo
+  fi
+fi
+
 echo "Model:        $MODEL"
 echo "Port:         $PORT"
 echo "Context:      $MAX_MODEL_LEN"
@@ -101,13 +170,64 @@ echo
 
 # --- serve -------------------------------------------------------------------
 #
-# --reasoning-parser nemotron_v3
-#     returns the reasoning trace as a structured field instead of inline text
-# --enable-auto-tool-choice --tool-call-parser qwen3_coder
-#     returns tool calls as structured tool_calls instead of text to scrape
+# THE DEFAULT HERE IS THE CONFIGURATION THAT HAS ACTUALLY BEEN RUN.
 #
-# The fp8 KV cache is pinned by the checkpoint's own quantisation config, so
-# vLLM selects fp8_e4m3 regardless of --kv-cache-dtype. Don't bother passing it.
+# Four flags, and no more. This is what produced the published When2Call results
+# on this hardware: 120/120 examples scored, zero errors, 17.86 GiB of weights
+# resident and 84.78 GiB left for KV cache. Every flag below earns its place.
+#
+#   --max-model-len 65536
+#       64k context. The model supports up to 1M; 64k is what was measured.
+#   --reasoning-parser nemotron_v3
+#       returns the reasoning trace as a structured field instead of inline text
+#   --enable-auto-tool-choice --tool-call-parser qwen3_coder
+#       returns tool calls as structured tool_calls instead of text to scrape
+#
+# Deliberately NOT passed:
+#
+#   --kv-cache-dtype fp8   This ModelOpt checkpoint pins fp8 KV in its own
+#                          quantisation config, so vLLM selects fp8_e4m3 whether
+#                          or not you pass it. Verified on this machine. Passing
+#                          it implies a choice that is not yours to make.
+#   --moe-backend marlin   GB10 has no native FP4 compute, so vLLM already falls
+#                          back to Marlin on its own and logs that it did.
+#                          Pinning it by hand adds nothing and would silently
+#                          override a better default on other hardware.
+#   --trust-remote-code    The checkpoint has no auto_map. There is no remote
+#                          code to trust, so this only widens what would run if
+#                          the repo were ever compromised.
+#
+# TUNED=1 opts into NVIDIA's fuller DGX Spark configuration from the vLLM day-0
+# blog: mamba cache tuning, prefix caching, explicit backends. It is a
+# reasonable configuration, published by people who know this model. It is also
+# not the one these numbers came from, and two of its flags change what you are
+# measuring -- see README, "Tuned profile". Benchmark on the default; explore
+# with TUNED=1.
+
+SERVE_FLAGS=(
+  --max-model-len "$MAX_MODEL_LEN"
+  --reasoning-parser nemotron_v3
+  --enable-auto-tool-choice
+  --tool-call-parser qwen3_coder
+)
+
+if [[ -n "${TUNED:-}" ]]; then
+  echo "TUNED=1: adding NVIDIA's DGX Spark tuning flags."
+  echo "         Results are not comparable to a default-profile run."
+  echo
+  SERVE_FLAGS+=(
+    --trust-remote-code
+    --moe-backend marlin
+    --kv-cache-dtype fp8
+    --mamba-backend flashinfer
+    --mamba-ssm-cache-dtype float16
+    --enable-mamba-cache-stochastic-rounding
+    --mamba-cache-philox-rounds 5
+    --mamba-cache-mode align
+    --enable-prefix-caching
+    --max-num-batched-tokens 16384
+  )
+fi
 
 # --entrypoint vllm is deliberate, and the failure it prevents is worth knowing.
 #
@@ -139,9 +259,6 @@ exec docker run $DETACH_FLAG --rm \
   --entrypoint vllm \
   "$IMAGE" \
   serve "$MODEL" \
-    --max-model-len "$MAX_MODEL_LEN" \
-    --reasoning-parser nemotron_v3 \
-    --enable-auto-tool-choice \
-    --tool-call-parser qwen3_coder \
+    "${SERVE_FLAGS[@]}" \
     --host 0.0.0.0 \
     --port 8000

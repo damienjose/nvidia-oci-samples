@@ -60,7 +60,8 @@ No NVIDIA licence, NGC subscription, or support contract is required to run this
 - NVIDIA DGX Spark (GB10, `sm_121`, 128 GB unified memory) running DGX OS.
 - Docker available to your user.
 - Python 3.10 or newer.
-- Approximately 25 GB of free disk for model weights (~20 GB actual, plus headroom).
+- Approximately 45 GB of free disk: ~20 GB of model weights plus the ~11 GB compressed
+  (larger unpacked) vLLM container image, with headroom.
 - A Hugging Face token (`HF_TOKEN`) only if you hit download rate limits.
 
 **No OCI account, cloud GPU shape, or network egress is required.**
@@ -188,6 +189,9 @@ curl -s http://localhost:8000/v1/models | python3 -m json.tool
 
 ## Serving Configuration
 
+Four flags. This is the configuration the published When2Call results on this hardware came from —
+120/120 examples scored, zero errors — and it is what `serve.sh` runs by default.
+
 ```bash
 vllm serve nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
   --max-model-len 65536 \
@@ -199,12 +203,42 @@ vllm serve nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
 
 | Flag | Why |
 | --- | --- |
+| `--max-model-len 65536` | 64k context. The model supports up to 1M; 64k is what was measured |
 | `--reasoning-parser nemotron_v3` | Returns the reasoning trace as a structured field |
 | `--enable-auto-tool-choice` | Enables model-initiated tool calls |
 | `--tool-call-parser qwen3_coder` | Returns tool calls as structured `tool_calls` |
-| `--max-model-len 65536` | 64k context; weights use ~17.9 GiB, leaving ~84 GiB for KV cache |
 
-The fp8 KV cache is pinned by the checkpoint's own quantisation config, so vLLM selects `fp8_e4m3` whether or not `--kv-cache-dtype` is passed.
+### Three flags deliberately not passed
+
+Worth stating, because they appear in other write-ups and look like omissions here.
+
+- **`--kv-cache-dtype fp8`** — this ModelOpt checkpoint pins fp8 KV in its own quantisation
+  config, so vLLM selects `fp8_e4m3` whether or not you pass it. Verified on this hardware.
+- **`--moe-backend marlin`** — GB10 has no native FP4 compute, so vLLM already falls back to
+  Marlin and logs that it did. Pinning it by hand adds nothing here and would override a better
+  default on hardware that does have FP4.
+- **`--trust-remote-code`** — the checkpoint declares `nemotron_h` with no `auto_map`. There is no
+  remote code to load, so this only widens what would execute if the repo were ever compromised.
+
+### Tuned profile
+
+`TUNED=1 ./serve.sh` adds NVIDIA's fuller DGX Spark configuration from the
+[vLLM day-0 announcement](https://vllm.ai/blog/2026-08-10-nemotron-3-5-lightning-vllm) — explicit
+backends, Mamba state-space cache tuning, prefix caching, a larger batched-token budget. It is a
+sound configuration published by the people who built the model.
+
+It is not the profile these numbers came from, and **two of its flags change what you are
+measuring**, so do not mix profiles within a comparison:
+
+- **`--enable-prefix-caching`** is a confound for latency work here. All 120 When2Call examples
+  share a system prompt and tool schemas, so prefix caching turns most prefills into cache hits.
+  Time-to-first-token improves for a reason that has nothing to do with the model, and the
+  local-versus-hosted latency comparison stops being like-for-like.
+- **`--mamba-ssm-cache-dtype float16` with stochastic rounding** changes numerics in the
+  state-space path. Accuracy results are only comparable against a run configured the same way.
+
+Benchmark on the default profile. Use `TUNED=1` to explore serving performance, and say which
+profile produced any number you publish.
 
 ## Credentials
 
@@ -244,7 +278,9 @@ A `401`/`403` or a *"gated dataset"* message means you need to accept the terms 
 | `MODEL_REVISION` | unset (`main`) | Pin a specific Hugging Face revision. Set this if you need byte-identical weights across machines |
 | `PORT` | `8000` | Host port for the endpoint |
 | `MAX_MODEL_LEN` | `65536` | Context length |
-| `VLLM_IMAGE` | `vllm/vllm-openai:v0.19.0-cu130-ubuntu2404` | Container image. Multi-arch, includes `linux/arm64` — see Known Issues |
+| `VLLM_IMAGE` | `vllm/vllm-openai:v0.27.1` | Container image. Multi-arch, includes `linux/arm64`. Must be a release with Nemotron 3.5 Lightning support — see Known Issues |
+| `SKIP_PRECHECK` | unset | Set to `1` to skip the architecture-support probe in `serve.sh` |
+| `TUNED` | unset | Set to `1` to add NVIDIA's DGX Spark tuning flags. Changes what latency and accuracy runs measure — see Serving Configuration |
 | `CONTAINER_NAME` | `vllm-nemotron` | Docker container name |
 | `HF_HOME` | `~/.cache/huggingface` | Hugging Face cache location |
 | `HF_TOKEN` | unset | Only needed if you hit download rate limits |
@@ -317,20 +353,32 @@ scored differently in the two locations, the cross-model numbers would mean noth
 
 ## Measured On One DGX Spark
 
+Setup, measured on a cleared cache with `vllm/vllm-openai:v0.27.1`:
+
 | Metric | Value |
 | --- | --- |
 | Weights on disk | 20.1 GB across 70 files |
-| Weights resident | 17.86 GiB |
-| KV cache available | 84.78 GiB (~23.4M tokens) |
 | Model snapshot | `cc84af2fe71647d87f4486c064f320e1e7535243` |
-| First-run download | 3 min 18 s (~100 MB/s wired) |
-| `setup.sh`, cold, end to end | 3 min 39 s |
-| Cold start | ~5 minutes |
-| TTFT, short prompt | 67.1 ms |
-| TTFT, ~8k prompt | 87.2 ms |
-| Decode, batch 1 | 76.2 tok/s |
+| First-run weight download | 3 min 18 s (~100 MB/s wired) |
+| Previous snapshot, for contrast | `b14872a5…` — 21.6 GB across 69 files |
+| `setup.sh`, cold, end to end | _pending re-measure_ |
+| Cold start to `Application startup complete` | _pending re-measure_ |
+| Weights resident | _pending re-measure_ |
+| KV cache available | _pending re-measure_ |
 
-Throughput is flat between a short prompt and an 8k prompt: prefill is cheap relative to memory-bandwidth-bound decode on GB10.
+**The weights moved.** An earlier run of this benchmark used snapshot `b14872a5…` at 21.6 GB
+across 69 files; the current `main` resolves to `cc84af2f…` at 20.1 GB across 70 files. Same repo,
+same model name, different bytes. Accuracy numbers do not carry across a snapshot change, which is
+why `setup.sh` prints the snapshot id and asks you to record it. Pin `MODEL_REVISION` if you need
+a run to stay reproducible.
+
+Serving figures — TTFT and decode rate — are measured live by `demo.ipynb` rather than asserted
+here, because they depend on the serve flags above and on what else is resident on the machine.
+Run the notebook and read your own numbers.
+
+Expect prefill to be cheap relative to decode on GB10: at 273 GB/s the decode path is
+memory-bandwidth-bound, so time-to-first-token stays close to flat as the prompt grows while
+tokens per second does not.
 
 ## Demo Flow
 
@@ -353,6 +401,28 @@ Stated plainly, because sizing this box correctly matters more than overselling 
 - **A single GB10 is a development and prototyping endpoint, not a shared production one.** With 273 GB/s of memory bandwidth, concurrent requests contend and largely serialise. One developer or one CI job is an excellent fit; dozens of simultaneous users are not.
 - **GB10 has no native FP4 compute.** vLLM logs `Your GPU does not have native support for FP4 computation` and falls back to the Marlin kernel. NVFP4 here is a *memory* optimisation — weights stored 4-bit and decompressed to compute. A large win on a bandwidth-bound part, but it is not FP4 tensor-core acceleration.
 - **Do not select this hardware for throughput.** Its defensible advantages are capacity, data residency, zero marginal cost per token, and deterministic capacity with no rate limits.
+
+## Going Faster: Speculative Decoding
+
+Nemotron 3.5 Lightning ships three speculative decoders — multi-token prediction (MTP), DFlash,
+and DSpark — and NVIDIA reports DSpark as the fastest of the three on DGX Spark. Speculative
+decoding drafts several tokens ahead and has the target model verify them in parallel, cutting
+sequential decode steps without changing what the model outputs.
+
+Not enabled here, for two reasons: DSpark needs a second checkpoint, so turning it on costs
+another download; and published acceptance-length figures (1.808 for MTP, 2.83 for DSpark) are
+**unverified on this hardware** — treat them as something to measure, not to quote.
+
+```bash
+--speculative_config.method dspark \
+--speculative_config.model nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DSpark \
+--speculative_config.num_speculative_tokens 3
+```
+
+Measure before and after on your own workload. Speculative decoding helps most where drafts are
+predictable — structured output, tool-call arguments, code — and least on short, high-entropy
+replies. Full configurations for MTP, DFlash, DSpark, H100, and Jetson are in the
+[vLLM day-0 announcement](https://vllm.ai/blog/2026-08-10-nemotron-3-5-lightning-vllm).
 
 ## Known Issues
 
@@ -389,9 +459,37 @@ final command is exactly `vllm serve …` whatever the image's default entrypoin
 you write your own `docker run`, check yours first:
 
 ```bash
-docker inspect vllm/vllm-openai:v0.19.0-cu130-ubuntu2404 \
+docker inspect vllm/vllm-openai:v0.27.1 \
   --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}'
 ```
+
+### Your vLLM release has to know the architecture
+
+Model support ships *in vLLM*, not only in the checkpoint. Serve this model on a release that
+predates its support and it fails during config load, ~10 seconds in, before any weights are read:
+
+```
+ValidationError: 1 validation error for ModelConfig
+  Value error, The checkpoint you are trying to load has model type `nemotron_h`
+  but Transformers does not recognize this architecture.
+```
+
+The advice in that message — upgrade Transformers, or install it from source — is the generic
+Hugging Face text and is **not** the fix here. Two things it does not tell you:
+
+1. **The checkpoint has no remote code.** Its `config.json` declares `"model_type": "nemotron_h"`
+   with no `auto_map`, so there is nothing for `--trust-remote-code` to load. The architecture has
+   to be compiled into the runtime.
+2. **The container's Transformers is not yours to upgrade.** vLLM pins it, and pip-upgrading inside
+   a running container gets you a different failure, not a working server.
+
+The fix is to move the *vLLM release* forward. This sample pins `v0.27.1`, which is the release
+carrying day-0 support for Nemotron 3.5 Lightning and the tag NVIDIA publishes for it.
+
+`serve.sh` probes for this before starting, so a mismatched image fails in about five seconds with
+an explanation rather than five minutes in with a pydantic traceback. The probe asks vLLM's own
+config registry rather than comparing version numbers, because a known-good nightly can sort below
+a pinned release. `SKIP_PRECHECK=1` bypasses it.
 
 ### Picking a vLLM container image for aarch64
 
@@ -399,18 +497,18 @@ This costs people an afternoon, so it is worth stating plainly.
 
 - **`nvcr.io/nvidia/vllm:latest` does not exist.** Pulling it fails with `manifest unknown`.
 - **vLLM's `latest` tag is not multi-arch.** Its arm64 builds are published under separate
-  arch-suffixed tags — `latest-aarch64`, `nightly-aarch64`, `cu130-nightly-aarch64` — which
-  are single-architecture manifests.
-- **Versioned tags are multi-arch.** `vllm/vllm-openai:v0.19.0-cu130-ubuntu2404` is a manifest
-  list containing both `linux/arm64` and `linux/amd64`, so Docker resolves the correct platform
-  on GB10 with no suffix to get wrong. That is why it is the default here: stable, pinned to a
-  version, and CUDA 13 to match DGX Spark.
+  arch-suffixed tags — `latest-aarch64`, `nightly-aarch64` — which are single-architecture
+  manifests.
+- **Versioned tags are multi-arch.** `vllm/vllm-openai:v0.27.1` is a manifest list containing both
+  `linux/arm64` (~10.5 GB) and `linux/amd64`, so Docker resolves the correct platform on GB10 with
+  no suffix to get wrong.
 
-Check any candidate before committing to it:
+Check any candidate before committing to it, and check *both* things — architecture and model
+support. Getting the architecture right is what lets the container start; it says nothing about
+whether that release can load your model:
 
 ```bash
-docker buildx imagetools inspect vllm/vllm-openai:v0.19.0-cu130-ubuntu2404 \
-  | grep -iE "platform|mediatype"
+docker buildx imagetools inspect vllm/vllm-openai:v0.27.1 | grep -iE "platform|mediatype"
 ```
 
 A manifest list shows `manifest.list.v2+json` and one `Platform:` line per architecture. A

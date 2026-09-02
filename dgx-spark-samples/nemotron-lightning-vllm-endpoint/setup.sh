@@ -10,7 +10,7 @@
 set -euo pipefail
 
 MODEL="${MODEL:-nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4}"
-IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.19.0-cu130-ubuntu2404}"
+IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.27.1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
