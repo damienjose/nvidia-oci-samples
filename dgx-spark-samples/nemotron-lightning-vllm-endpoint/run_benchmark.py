@@ -43,13 +43,45 @@ RESULTS = HERE / "results"
 # Retrying client call
 # --------------------------------------------------------------------------
 
+def _retry_after(exc) -> float | None:
+    """Seconds the server asked us to wait, if it said so.
+
+    A gateway that returns Retry-After knows its own limits better than our
+    backoff curve does. Honouring it converges faster and annoys the service
+    less than guessing.
+    """
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None)
+    if not headers:
+        return None
+    for key in ("retry-after", "Retry-After", "x-ratelimit-reset-after"):
+        val = headers.get(key) if hasattr(headers, "get") else None
+        if val:
+            try:
+                return max(0.0, float(val))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def call_with_backoff(client, *, model, messages, tools, max_tokens,
                       extra_body=None,
-                      max_attempts=6, base=2.0, cap=45.0, timeout=180):
-    """One chat completion, retrying 429 and 5xx with exponential backoff and
-    full jitter. Returns (message, finish_reason, error_str)."""
+                      max_attempts=8, base=2.0, cap=90.0, timeout=180):
+    """One chat completion, retrying 429 and 5xx with exponential backoff.
+
+    Defaults are deliberately patient. Free-tier catalog endpoints rate-limit
+    on request count, so a sweep that gives up early reports a working model as
+    "no data" -- which is honest but useless. Eight attempts with a 90 s cap and
+    full jitter costs wall-clock time and buys complete rows.
+
+    Returns (message, finish_reason, error_str). The error string names the
+    attempt count so an exhausted retry budget is distinguishable from a
+    first-try failure.
+    """
     last = "unknown"
+    attempts = 0
     for attempt in range(max_attempts):
+        attempts = attempt + 1
         try:
             kwargs = dict(model=model, messages=messages,
                           max_tokens=max_tokens, temperature=0.0,
@@ -65,15 +97,22 @@ def call_with_backoff(client, *, model, messages, tools, max_tokens,
         except Exception as e:                                  # noqa: BLE001
             last = f"{type(e).__name__}: {e}"
             status = getattr(e, "status_code", None)
+            text = str(e).lower()
+            # A 400 is a malformed request: the schema, the model id, the
+            # parameters. Retrying it just wastes the budget eight times over.
+            if status == 400 or "invalid" in text and "400" in text:
+                return None, None, f"{last} (not retryable)"
             retryable = status in (408, 409, 429, 500, 502, 503, 504) or \
-                        "429" in str(e) or "rate" in str(e).lower() or \
-                        "timeout" in str(e).lower()
+                        "429" in text or "rate" in text or "timeout" in text
             if not retryable or attempt == max_attempts - 1:
                 break
-            sleep = min(cap, base * (2 ** attempt))
-            sleep = random.uniform(0, sleep)          # full jitter
+            asked = _retry_after(e)
+            if asked is not None:
+                sleep = min(cap, asked)
+            else:
+                sleep = random.uniform(0, min(cap, base * (2 ** attempt)))
             time.sleep(sleep)
-    return None, None, last
+    return None, None, f"{last} (after {attempts} attempts)"
 
 
 # --------------------------------------------------------------------------
@@ -142,12 +181,14 @@ def run_endpoint(spec: dict, examples: list[dict], max_tokens: int,
     # reply -- that is wait, not generation -- so a fixed 180 s timeout would
     # fail it on every example and report a working model as dead.
     per_req_timeout = spec.get("timeout", 180)
+    attempts = spec.get("max_attempts", 8)
 
     def one(ex):
         msg, finish, err = call_with_backoff(
             client, model=spec["model"], messages=w2c.build_messages(ex),
             tools=w2c.to_openai_tools(ex["tools"]), max_tokens=budget,
-            extra_body=extra, timeout=per_req_timeout)
+            extra_body=extra, timeout=per_req_timeout,
+            max_attempts=attempts)
         if err:
             return w2c.Record(label=ex["label"], called=False, tool_name=None,
                               gold_tool=ex.get("gold_tool"), has_text=False,

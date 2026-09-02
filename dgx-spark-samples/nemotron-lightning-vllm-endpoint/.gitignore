@@ -24,3 +24,6 @@ results/raw-*.jsonl
 # public NVIDIA API catalog, so anyone can reproduce the sweep. NVIDIA staff
 # using the internal Inference Hub keep that variant here, uncommitted.
 endpoints-*.json
+
+# Scratch output from a smoke run: ./run_benchmark.py --n 2 --out results/smoke.json
+results/smoke*.json

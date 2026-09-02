@@ -419,20 +419,52 @@ missing argument, or decline because no tool fits.
 Scoring is deterministic. We observe what the server did; there is no LLM judge, so the
 numbers reproduce.
 
-### Run it
+### Results ship with the repo; re-running them is optional
+
+`results/summary.json` and the charts are committed, so `demo.ipynb` renders the comparison with
+no key, no network and no waiting. That is deliberate: the sweep is 600 requests across five
+endpoints and takes a few hours, most of it spent waiting on shared free-tier gateways rather than
+on model compute. Fine unattended; wrong in front of an audience.
+
+Nothing about it is precomputed magic, though — the committed file is the output of
+`run_benchmark.py` in this directory, and you can regenerate it.
+
+### Run it yourself
+
+**1. Get a free NVIDIA API key.** Create an account at [build.nvidia.com](https://build.nvidia.com/),
+then generate an **NGC Personal API Key** with the *NVIDIA Public API Endpoints* service enabled.
+No NVIDIA affiliation is required and the free tier is sufficient.
+
+**2. Export it** without leaving it in your shell history:
 
 ```bash
-# quick local slice — about a minute
-./run_benchmark.py --only spark --n 4
-
-# the full local run — roughly 9 minutes on one GB10
-./run_benchmark.py --only spark --n 40
-
-# all five endpoints (needs NVIDIA_API_KEY for the hosted ones)
 read -rs -p "NVIDIA_API_KEY: " NVIDIA_API_KEY && export NVIDIA_API_KEY && echo
-./run_benchmark.py --n 40
-./make_chart.py
 ```
+
+**3. Check the endpoints first.** One request each, a few minutes, and it catches the failures that
+would otherwise waste the whole run:
+
+```bash
+./preflight.py --real 2
+```
+
+**4. Run it.**
+
+```bash
+./run_benchmark.py --config endpoints.json --n 40 --save-raw
+python3 make_chart.py
+```
+
+Results are checkpointed after every endpoint, so an interrupted run keeps what it had; `--resume`
+picks up from there. Budget a few hours for all five.
+
+**Only want the local number?** `--only spark` finishes in about twelve minutes and **needs no key
+at all** — it talks to the model on your own machine. That is the figure this sample is really
+about, and it is the one nobody can rate-limit.
+
+From inside the notebook, `FORCE_RERUN = True` in section 7 does the same thing. Jupyter inherits
+the environment of the shell that launched it, so export the key *before* starting Jupyter or the
+hosted endpoints will be skipped.
 
 ### Metrics
 

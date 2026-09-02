@@ -21,7 +21,10 @@
     "endpoints queue: one measured 264 s to return 17 tokens, which is wait rather",
     "than generation. For those, raise concurrency to overlap the waits and raise",
     "timeout so a queue length is not mistaken for a dead model. Lowering max_tokens",
-    "does not help when the time is spent queueing."
+    "does not help when the time is spent queueing.",
+    "max_attempts is the retry budget per request. Free-tier endpoints rate-limit on",
+    "request count; the runner honours Retry-After when the gateway sends it, and",
+    "never retries a 400 -- a malformed request fails the same way eight times."
   ],
   "endpoints": [
     {
@@ -41,7 +44,8 @@
       "concurrency": 2,
       "max_tokens": 8192,
       "_note": "The control: same model as the Spark endpoint, someone else's hardware.",
-      "timeout": 300
+      "timeout": 300,
+      "max_attempts": 8
     },
     {
       "name": "gpt-oss-120b",
@@ -51,7 +55,8 @@
       "api_key_env": "NVIDIA_API_KEY",
       "concurrency": 2,
       "max_tokens": 4096,
-      "timeout": 300
+      "timeout": 300,
+      "max_attempts": 8
     },
     {
       "name": "gemma-4-31b",
@@ -62,7 +67,8 @@
       "concurrency": 4,
       "max_tokens": 8192,
       "_note": "Dense 33B. Latency on the free tier is bimodal -- measured at both 1.7 s and 264 s for the same trivial request, so the slow case is queueing rather than compute. Concurrency 4 absorbs a queue without bursting hard against a shared endpoint.",
-      "timeout": 600
+      "timeout": 600,
+      "max_attempts": 8
     },
     {
       "name": "kimi-k3",
@@ -73,7 +79,8 @@
       "concurrency": 2,
       "max_tokens": 8192,
       "timeout": 600,
-      "_note": "Rate limited hard: 5 of 6 real requests returned 429 at concurrency 8. The free tier caps requests, not just tokens, so concurrency does not buy throughput here. The sweep retries with backoff; preflight does not."
+      "_note": "Rate limits on request count, so concurrency does not buy throughput. Left at 2 with a deeper retry budget: one of six failed in the smoke run, and a complete row is worth the wall-clock time.",
+      "max_attempts": 12
     }
   ]
 }
