@@ -148,16 +148,20 @@ cat <<EOF
 
 $(printf '\033[1m== Setup complete\033[0m')
 
-Next — activate the environment first, then:
+Next -- activate the Python virtual environment this script just built, then:
 
   source .venv/bin/activate
 
   ./serve.sh                  start the endpoint (leave running, ~5 min cold)
   jupyter lab demo.ipynb      open the walkthrough
 
-Everything below expects that environment: run_benchmark.py, make_chart.py and
-jupyter all live in .venv. If a command reports a missing module, you have not
-activated it. (serve.sh is the exception -- it only needs Docker.)
+That is .venv/bin/activate -- a Python virtualenv, not a .env credentials file.
+There is no .env in this sample and you should not create one: endpoints.json
+reads NVIDIA_API_KEY from the environment, so no key is ever written to disk.
+
+run_benchmark.py, make_chart.py and jupyter all live in .venv. If a command
+reports a missing module, you have not activated it. serve.sh is the exception
+-- it talks to Docker and needs no Python environment at all.
 
 Verify the endpoint once it is up:
 

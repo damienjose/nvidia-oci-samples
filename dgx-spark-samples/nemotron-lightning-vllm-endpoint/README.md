@@ -242,6 +242,11 @@ profile produced any number you publish.
 
 ## Credentials
 
+**`.venv` and `.env` are not the same thing, and only one of them exists here.**
+`setup.sh` creates `.venv/`, a Python virtual environment you activate with
+`source .venv/bin/activate`. There is no `.env` file — `.env` and `*.key` appear in `.gitignore`
+purely as a guard against someone creating one. Keys stay in the environment.
+
 Three different things get confused here, so to be explicit — **the core demo needs none of them.**
 
 | | Needed for | When |
