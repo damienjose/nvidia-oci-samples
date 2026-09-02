@@ -78,6 +78,23 @@ You can work directly on the device with a keyboard and monitor, but most people
 2. **Add your device.** On the same network, Sync discovers DGX Spark systems automatically over mDNS. Otherwise add it by hostname or IP, using the account credentials you created during first boot. Sync configures SSH key-based authentication for you, so subsequent connections need no password. See [Direct Connections](https://docs.nvidia.com/sync/latest/direct-connections.html).
 3. **Connect**, then launch **DGX Dashboard**, **Terminal**, or **VS Code** from the app list. Each opens against the device with tunnels already in place.
 
+Once Sync has added the device it writes a **Host alias into `~/.ssh/config`**, so you can also
+reach it from any terminal without opening the Sync app:
+
+```bash
+ssh -t <sync-host-alias> "cd ~; bash -l"
+```
+
+Two flags worth understanding, because the bare `ssh <alias>` form causes confusing failures later:
+
+- **`-t`** forces a TTY. Without it you get a non-interactive session, and anything that expects a
+  terminal — progress bars, `docker` output, `Ctrl-C` on a foreground server — misbehaves.
+- **`bash -l`** starts a *login* shell, which sources your profile. Without it `PATH` may be
+  missing entries added at login, so tools that work when you sit at the machine are "not found"
+  over SSH.
+
+Run `grep -i host ~/.ssh/config` to find the alias Sync created if you do not know it.
+
 **If your laptop is not on the same network as the device**, Sync supports [Tailscale connections](https://docs.nvidia.com/sync/latest/tailscale.html) — useful for a Spark sitting on an office network while you work remotely.
 
 Full walkthrough: [NVIDIA Sync Getting Started](https://docs.nvidia.com/sync/latest/getting-started.html).
@@ -103,13 +120,44 @@ To reach JupyterLab or the Dashboard this way you must tunnel the ports yourself
 
 ```bash
 # DGX Dashboard
-ssh -L 11000:localhost:11000 <username>@<device-name>.local
+ssh -N -L 11000:localhost:11000 <username>@<device-name>.local
 
 # JupyterLab started manually by this sample
-ssh -L 8888:localhost:8888 <username>@<device-name>.local
+ssh -N -L 8888:localhost:8888 <username>@<device-name>.local
 ```
 
+`-N` means "set up the forward, do not run a command". The terminal will sit there with no prompt
+and no output — that is what success looks like. Leave it running for as long as you need the
+tunnel. If Sync gave you a Host alias, use it in place of `<username>@<device-name>.local`.
+
 The Dashboard's integrated JupyterLab assigns a **per-user port**, listed in `/opt/nvidia/dgx-dashboard-service/jupyterlab_ports.yaml` on the device — check there before tunnelling. NVIDIA Sync handles all of this for you, which is why Option A is recommended.
+
+### Opening the notebook over a tunnel
+
+Whichever way you connect, this is the most reliable way to run `demo.ipynb` — the activated
+environment *is* the kernel, so there is no kernel to pick and no way to pick the wrong one.
+
+```bash
+# On the DGX Spark, in a new terminal. Leave serve.sh running in its own.
+cd <clone>/dgx-spark-samples/nemotron-lightning-vllm-endpoint
+source .venv/bin/activate
+jupyter lab --no-browser --ip 127.0.0.1 --port 8888
+```
+
+```bash
+# On your laptop, in another terminal. Leave it running; it prints nothing.
+ssh -N -L 8888:localhost:8888 <username>@<device-name>.local
+```
+
+Then open the tokenised URL Jupyter printed.
+
+Two details that matter:
+
+- **`source .venv/bin/activate` is required.** `jupyter` is installed in `.venv`, not on the
+  system PATH, so without it the command is not found.
+- **`--ip 127.0.0.1` binds Jupyter to loopback**, so it is reachable only through your tunnel.
+  Without it Jupyter listens on every interface, and anyone on the same network who can read the
+  token has your notebook.
 
 ## Quickstart
 
@@ -147,7 +195,7 @@ Run the sample:
 cd nvidia-oci-samples/dgx-spark-samples/nemotron-lightning-vllm-endpoint
 ./setup.sh                    # environment, container, weights
 source .venv/bin/activate     # required — see below
-./serve.sh                    # start vLLM (leave running; ~5 min cold start)
+./serve.sh                    # start vLLM (leave running; ~4 min cold start)
 ```
 
 **`setup.sh` creates a virtual environment at `.venv` and installs into it.** DGX OS ships a
@@ -284,6 +332,7 @@ A `401`/`403` or a *"gated dataset"* message means you need to accept the terms 
 | `PORT` | `8000` | Host port for the endpoint |
 | `MAX_MODEL_LEN` | `65536` | Context length |
 | `VLLM_IMAGE` | `vllm/vllm-openai:v0.27.1` | Container image. Multi-arch, includes `linux/arm64`. Must be a release with Nemotron 3.5 Lightning support — see Known Issues |
+| `VLLM_CACHE_DIR` | `~/.cache/vllm` | Persisted torch.compile and FlashInfer autotune caches |
 | `SKIP_PRECHECK` | unset | Set to `1` to skip the architecture-support probe in `serve.sh` |
 | `TUNED` | unset | Set to `1` to add NVIDIA's DGX Spark tuning flags. Changes what latency and accuracy runs measure — see Serving Configuration |
 | `CONTAINER_NAME` | `vllm-nemotron` | Docker container name |
@@ -358,18 +407,45 @@ scored differently in the two locations, the cross-model numbers would mean noth
 
 ## Measured On One DGX Spark
 
-Setup, measured on a cleared cache with `vllm/vllm-openai:v0.27.1`:
+Measured on `spark-c251` (GB10, `sm_121`, driver 580.159.03) with
+`vllm/vllm-openai:v0.27.1` and snapshot `cc84af2f…`.
 
 | Metric | Value |
 | --- | --- |
 | Weights on disk | 20.1 GB across 70 files |
-| Model snapshot | `cc84af2fe71647d87f4486c064f320e1e7535243` |
+| Weights resident | 17.85 GiB |
+| **KV cache** | **90.08 GiB — 24,703,795 tokens** |
+| Maximum concurrency at 64k context | 376.95× |
+| Peak activation | 2.23 GiB |
+| CUDA graph pool | 0.44 GiB |
 | First-run weight download | 3 min 18 s (~100 MB/s wired) |
-| Previous snapshot, for contrast | `b14872a5…` — 21.6 GB across 69 files |
-| `setup.sh`, cold, end to end | _pending re-measure_ |
-| Cold start to `Application startup complete` | _pending re-measure_ |
-| Weights resident | _pending re-measure_ |
-| KV cache available | _pending re-measure_ |
+| `setup.sh`, everything cached | 3.7 s |
+| Cold start to `Application startup complete` | ~4 min |
+
+Where that four minutes goes, since it is the number people plan around:
+
+| Phase | Time |
+| --- | --- |
+| Loading 52 safetensors shards | 100.4 s |
+| Engine init — profile, KV cache, warmup | 93.0 s |
+| ↳ Mamba2 SSD Triton kernel warmup | 35.2 s |
+| ↳ FlashInfer fp8 GEMM autotune | 18.0 s |
+| ↳ CUDA graph capture (86 graphs) | 13.0 s |
+| ↳ `torch.compile` | 7.5 s |
+
+`serve.sh` mounts `~/.cache/vllm` into the container, so the `torch.compile`
+artefacts and the FlashInfer autotune results survive a restart — about 25 s
+that only the first start pays.
+
+**Three things the startup log confirms**, each of which is asserted elsewhere in this README:
+
+- `Using fp8_e4m3 data type to store kv cache` appears with no `--kv-cache-dtype` passed. The
+  checkpoint pins it, exactly as documented.
+- `Using 'MARLIN' NvFp4 MoE backend` is selected automatically from eight candidates, alongside
+  `Your GPU does not have native support for FP4 computation`. GB10 has no FP4 tensor cores;
+  NVFP4 is buying memory here, not compute.
+- `Updating mamba_ssm_cache_dtype to 'float32' for NemotronH` — vLLM overrides this itself. Worth
+  knowing before you hand-set `--mamba-ssm-cache-dtype float16`, as the tuned profile does.
 
 **The weights moved.** An earlier run of this benchmark used snapshot `b14872a5…` at 21.6 GB
 across 69 files; the current `main` resolves to `cc84af2f…` at 20.1 GB across 70 files. Same repo,
@@ -384,6 +460,21 @@ Run the notebook and read your own numbers.
 Expect prefill to be cheap relative to decode on GB10: at 273 GB/s the decode path is
 memory-bandwidth-bound, so time-to-first-token stays close to flat as the prompt grows while
 tokens per second does not.
+
+### How long from `git clone` to a live endpoint
+
+| | Cold, nothing cached | Everything cached |
+| --- | --- | --- |
+| `git clone` | ~5 s | ~5 s |
+| `setup.sh` — venv and client deps | ~1 min | ~10 s |
+| `setup.sh` — pull the vLLM image (~10.5 GB compressed) | 3–6 min | 0 |
+| `setup.sh` — download weights (20.1 GB) | ~3.5 min | 0 |
+| `serve.sh` — cold start | ~4 min | ~3.5 min |
+| **Total** | **~12–15 min** | **~4 min** |
+
+Roughly 31 GB crosses the network on a first run, so the cold figure is bandwidth-bound and can be
+considerably longer on a slow link. **Start `setup.sh` before you need the endpoint**, not while
+someone is watching.
 
 ## Demo Flow
 
@@ -524,6 +615,43 @@ you expect others to run — nightly tags are pruned from the registry over time
 - **Hugging Face snapshot directories are symlink farms** into `blobs/`. Mount the whole cache into the container, not just the snapshot directory, or every link dangles. `serve.sh` handles this.
 - **JupyterLab inherits group membership at login.** After `sudo gpasswd -a $(whoami) docker` you must restart the JupyterLab *server*; a kernel restart is not sufficient. Use `$(whoami)` rather than `$USER`, which can be `root` in a Jupyter-spawned shell.
 - **vLLM 0.26 and later expose the reasoning trace as `reasoning`, not `reasoning_content`.** The notebook handles both.
+
+### `message.content` comes back `None`
+
+The single most confusing thing about serving a reasoning model, and it does not look like a
+token-budget problem when it happens:
+
+```
+None
+  tokens        37 in / 200 out
+```
+
+Thinking is **on by default** — the model's chat template sets `enable_thinking` to `True` unless
+you say otherwise — and **reasoning and answer share one `max_tokens` budget**. With the budget
+set low the model spends all of it reasoning, never reaches its answer, and returns `content:
+None` with `finish_reason: "length"`. The tell is `completion_tokens` landing exactly on your
+`max_tokens`.
+
+Two fixes, and which one you want depends on the request:
+
+```python
+# 1. Give it room, and read the trace off its own field
+resp = client.chat.completions.create(..., max_tokens=1536)
+msg = resp.choices[0].message
+reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None)
+
+# 2. Or switch thinking off for requests where you just want the answer
+resp = client.chat.completions.create(
+    ..., extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+```
+
+Median completion with thinking on is around 768 tokens, with a tail to 4096 — so 1536 is a
+reasonable floor for interactive use and `run_benchmark.py` defaults to 3072.
+
+**Check `finish_reason` before you conclude anything about a model's behaviour.** A truncated
+attempt and a considered decision to stay silent look identical if you only read `content`. This
+is the same trap described under *Reading results honestly* for the benchmark, where a truncated
+reasoning trace scores exactly like a decision not to call a tool.
 
 ## Tests
 

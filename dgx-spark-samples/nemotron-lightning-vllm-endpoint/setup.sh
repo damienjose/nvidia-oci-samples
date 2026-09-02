@@ -152,7 +152,7 @@ Next -- activate the Python virtual environment this script just built, then:
 
   source .venv/bin/activate
 
-  ./serve.sh                  start the endpoint (leave running, ~5 min cold)
+  ./serve.sh                  start the endpoint (leave running, ~4 min cold)
   jupyter lab demo.ipynb      open the walkthrough
 
 That is .venv/bin/activate -- a Python virtualenv, not a .env credentials file.

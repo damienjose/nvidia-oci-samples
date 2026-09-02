@@ -4,7 +4,8 @@
 #
 # Serve Nemotron 3.5 Lightning 30B-A3B (NVFP4) on DGX Spark via vLLM.
 #
-# Cold start is ~5 minutes. Leave this running in its own terminal; the
+# First start is ~4 minutes; later starts are quicker once the compile and
+# autotune caches are warm. Leave this running in its own terminal; the
 # notebook talks to it over HTTP.
 #
 # Usage:
@@ -38,6 +39,11 @@ CONTAINER_NAME="${CONTAINER_NAME:-vllm-nemotron}"
 # VLLM_IMAGE=<that tag> ./serve.sh
 IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.27.1}"
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
+# vLLM writes its torch.compile artefacts and FlashInfer autotune results to
+# /root/.cache/vllm. The container is --rm, so without a mount that work is
+# thrown away and redone on every start: ~7s of compilation plus ~18s of fp8
+# GEMM autotuning, every time. Persist it and only the first start pays.
+VLLM_CACHE="${VLLM_CACHE_DIR:-$HOME/.cache/vllm}"
 
 DETACH_FLAG=""
 if [[ "${1:-}" == "--detach" ]]; then
@@ -67,7 +73,7 @@ fi
 # IMPORTANT: mount the whole HF cache, not just the snapshot directory.
 # Snapshot dirs are symlink farms into blobs/ -- mounting only the snapshot
 # leaves every link dangling and the model fails to load.
-mkdir -p "$HF_CACHE"
+mkdir -p "$HF_CACHE" "$VLLM_CACHE"
 
 if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
   echo "Removing existing container '$CONTAINER_NAME'..."
@@ -188,9 +194,10 @@ echo "Model:        $MODEL"
 echo "Port:         $PORT"
 echo "Context:      $MAX_MODEL_LEN"
 echo "HF cache:     $HF_CACHE"
+echo "vLLM cache:   $VLLM_CACHE"
 echo "Image:        $IMAGE"
 echo
-echo "Cold start takes ~5 minutes. Endpoint will be at http://localhost:$PORT/v1"
+echo "First start takes ~4 minutes; later starts are quicker once the compile\nand autotune caches are warm. Endpoint will be at http://localhost:$PORT/v1"
 echo
 
 # --- serve -------------------------------------------------------------------
@@ -280,6 +287,7 @@ exec docker run $DETACH_FLAG --rm \
   --ipc=host \
   -p "${PORT}:8000" \
   -v "${HF_CACHE}:/root/.cache/huggingface" \
+  -v "${VLLM_CACHE}:/root/.cache/vllm" \
   -e HF_TOKEN="${HF_TOKEN:-}" \
   --entrypoint vllm \
   "$IMAGE" \
