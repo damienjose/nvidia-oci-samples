@@ -77,6 +77,28 @@ def _is_timeout(e: BaseException) -> bool:
     return isinstance(e, TimeoutError) or "timeout" in type(e).__name__.lower()
 
 
+def _is_stream_options_error(e: BaseException) -> bool:
+    """Did this exception mean "I do not accept stream_options"?
+
+    Matched by name and message rather than by class, for the same reason
+    _is_timeout is: the SDK's exception types are not the builtins', and a
+    gateway in front of the model may surface a rejected parameter as any of
+    several of them. Both halves of the test matter. The first narrows it to
+    the client's own request being wrong; the message is then what
+    distinguishes *this* parameter from every other 400 -- a bad key, a
+    malformed body, a model id that does not exist. Retrying one of those
+    without usage would often succeed, and the sample would be recorded as
+    though the first attempt had never failed.
+    """
+    name = type(e).__name__.lower()
+    status = getattr(e, "status_code", None)
+    if not ("badrequest" in name or "unprocessable" in name
+            or status in (400, 422)):
+        return False
+    msg = str(e).lower()
+    return "stream_options" in msg or "include_usage" in msg
+
+
 def one_request(client, model: str, extra_body: dict | None, timeout: int,
                 deadline: float = 60.0):
     """Stream one completion.
@@ -137,10 +159,23 @@ def one_request(client, model: str, extra_body: dict | None, timeout: int,
     try:
         ttft, n_chunks, reported, total = _run(with_usage=True)
     except Exception as e:                                      # noqa: BLE001
-        # A timeout must not fall through to the retry. The endpoint is queued,
-        # not fussy about stream_options, and retrying would spend a second full
-        # deadline learning the same thing.
-        if _is_timeout(e):
+        # This retry exists for exactly one condition: a gateway that rejects
+        # stream_options. Everything else must propagate and be counted as a
+        # failed sample by probe().
+        #
+        # A timeout must not fall through. The endpoint is queued, not fussy
+        # about stream_options, and retrying would spend a second full deadline
+        # learning the same thing. That check is redundant against the one
+        # below and is kept anyway, because it is the case a reader comes here
+        # looking for and it should not depend on a message match.
+        #
+        # Nor must anything else. An auth failure, a rate limit or a 5xx
+        # retried here can succeed on the second attempt and be recorded as a
+        # clean sample -- taken under conditions the other samples were not,
+        # with the first failure invisible -- and, because the retry cannot ask
+        # for usage, it marks the whole endpoint decode_exact: false for a
+        # reason that has nothing to do with token counting.
+        if _is_timeout(e) or not _is_stream_options_error(e):
             raise
         ttft, n_chunks, reported, total = _run(with_usage=False)
 
@@ -213,8 +248,20 @@ def probe(spec: dict, samples: int, deadline: float = 60.0,
 
     q = lambda xs: {"median": round(statistics.median(xs), 1),
                     "min": round(min(xs), 1), "max": round(max(xs), 1)}
+    # The acquisition settings are recorded on the row, not only in the file
+    # header. --resume deliberately carries across endpoints measured under
+    # *different* settings -- giving one queued endpoint a longer deadline
+    # while keeping the healthy measurements is the whole reason the flag
+    # exists -- and a header written by the current invocation then describes
+    # rows that were never taken that way. A chart captioned from the header
+    # would state eleven samples for a row measured with five: a number that
+    # looks like a measurement and is not, which is the same failure as the
+    # 1303 tok/s above. A row that carries its own settings cannot lie about
+    # them however it is later merged.
     return {"name": name, "location": spec.get("location", ""), "model": model,
             "samples": len(ttfts), "errors": errors,
+            "samples_requested": samples, "deadline_s": deadline,
+            "max_tokens": MAX_TOKENS,
             "ttft_ms": q(ttfts), "decode_tok_s": q(decodes),
             "decode_exact": exact_all}
 
@@ -247,6 +294,12 @@ def main() -> int:
 
     print(f"Latency probe — {args.samples} sequential samples, max_tokens "
           f"{MAX_TOKENS}, concurrency 1, {args.deadline:.0f}s deadline\n")
+    # These header fields describe *this* invocation. Under --resume the file
+    # can also hold rows measured under other settings, so the header is not a
+    # safe caption for the figure -- each row carries its own copy, and
+    # make_latency_chart.py reads those. The header is kept because a
+    # latency.json written before per-row settings existed has nothing else,
+    # and because "what was the last run" is worth recording on its own.
     out = {"generated": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
            "prompt": PROMPT, "max_tokens": MAX_TOKENS,
            "samples_requested": args.samples, "deadline_s": args.deadline,

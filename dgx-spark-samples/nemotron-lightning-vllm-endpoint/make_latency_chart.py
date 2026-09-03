@@ -31,6 +31,42 @@ HERE = Path(__file__).parent
 GREEN, GREY, RED, INK = "#76B900", "#B9BEC4", "#C4453B", "#141618"
 
 
+def acquired(rows, key, header_val, unknown="varying by endpoint"):
+    """How to describe an acquisition setting shared -- or not -- by the rows.
+
+    The file header records the invocation that wrote it, but `--resume`
+    deliberately carries across endpoints measured under different settings.
+    Captioning the figure from the header therefore claims every bar was taken
+    at the last run's --samples, which for the retained rows is false:
+    `--resume --samples 11` would caption a five-sample row as eleven. The rows
+    know what they were measured at; the header does not.
+
+    Four cases, in order:
+
+      * No row carries the setting -- a latency.json written before rows
+        recorded their own. The header is all there is, and for such a file it
+        is accurate, because that version could not merge settings either.
+      * Every row agrees. Say the number, and say it exactly as the caption
+        always did, so a committed figure stays reproducible from its JSON.
+      * They disagree but all are known. Give the range.
+      * Some row carries no setting at all. That is a disagreement, not a
+        match on the header, because what the older row used is unknown -- so
+        say so rather than pick a number.
+
+    `unknown` is per call site because the phrase has to read correctly in the
+    sentence it lands in, and the two slots are not the same shape.
+    """
+    vals = [r.get(key) for r in rows]
+    if not vals or all(v is None for v in vals):
+        return str(header_val)
+    uniq = set(vals)
+    if len(uniq) == 1:
+        return f"{uniq.pop()}"
+    if None in uniq:
+        return unknown
+    return f"{min(uniq):g}–{max(uniq):g}"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--latency", default=str(HERE / "results" / "latency.json"))
@@ -125,10 +161,13 @@ def main() -> int:
         ax.tick_params(length=0)
 
     if not args.compact:
-        n = data.get("samples_requested", "?")
+        # Read from the rows, falling back to the header. See acquired().
+        n = acquired(ok, "samples_requested", data.get("samples_requested", "?"),
+                     unknown="A varying number of")
+        mt = acquired(ok, "max_tokens", data.get("max_tokens", "?"))
         fig.text(0.008, -0.02,
                  f"{n} sequential samples per endpoint, concurrency 1, max_tokens "
-                 f"{data.get('max_tokens','?')}, one warmup discarded. Bars are medians; "
+                 f"{mt}, one warmup discarded. Bars are medians; "
                  f"whiskers are the full min-max range. Green = local on one DGX Spark. "
                  f"Hosted figures are end-to-end and include network and gateway queueing, "
                  f"which cannot be separated from model time."
@@ -139,7 +178,7 @@ def main() -> int:
                  fontsize=8.2, color="#7A8188")
 
     fig.tight_layout()
-    Path(args.out).parent.mkdir(exist_ok=True)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, bbox_inches="tight", facecolor="white")
     print(f"wrote {args.out}")
     return 0

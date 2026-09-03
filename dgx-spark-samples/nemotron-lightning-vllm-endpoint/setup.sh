@@ -150,7 +150,7 @@ $(printf '\033[1m== Setup complete\033[0m')
 
 Next -- activate the Python virtual environment this script just built, then:
 
-  source ${VENV}/bin/activate
+  source "${VENV}/bin/activate"
 
   ./serve.sh                  start the endpoint (leave running, ~4 min cold)
   jupyter lab demo.ipynb      open the walkthrough
