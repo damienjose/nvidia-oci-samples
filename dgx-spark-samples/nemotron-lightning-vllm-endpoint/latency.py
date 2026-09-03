@@ -4,9 +4,10 @@
 """
 Measure end-to-end latency to every endpoint in endpoints.json.
 
-    ./latency.py                    # all endpoints, 7 samples each
+    ./latency.py                    # all endpoints, 5 samples each
     ./latency.py --only spark       # just the local one, no key needed
     ./latency.py --samples 11       # tighter medians, longer run
+    ./latency.py --resume --deadline 240    # retry only what was queued, patiently
 
 What this measures, precisely
 -----------------------------
@@ -222,12 +223,19 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(HERE / "endpoints.json"))
     ap.add_argument("--only", action="append", help="endpoint name; repeatable")
-    ap.add_argument("--samples", type=int, default=7)
+    ap.add_argument("--samples", type=int, default=5,
+                    help="sequential samples per endpoint, after one discarded "
+                         "warmup. Five is enough for a median when the finding is "
+                         "an order of magnitude; raise it to tighten one that is not.")
     ap.add_argument("--deadline", type=float, default=60.0,
                     help="seconds to wait for one completion before giving up on a "
                          "sample. A queued free-tier endpoint will otherwise hold the "
                          "connection open indefinitely.")
     ap.add_argument("--out", default=str(RESULTS / "latency.json"))
+    ap.add_argument("--resume", action="store_true",
+                    help="keep endpoints already measured in --out and retry only the "
+                         "ones that were skipped. Lets a queued endpoint be given a "
+                         "longer deadline without re-measuring the healthy ones.")
     args = ap.parse_args()
 
     specs = json.loads(Path(args.config).read_text())["endpoints"]
@@ -251,10 +259,26 @@ def main() -> int:
     outfile = Path(args.out)
     outfile.parent.mkdir(exist_ok=True)
 
+    # --resume keeps whatever already measured cleanly and retries only the rest.
+    # A shared gateway that was queueing at one hour may not be at the next, and
+    # re-measuring the healthy endpoints to find that out both wastes minutes and
+    # replaces good samples with ones taken under different conditions.
+    keep = {}
+    if args.resume and outfile.exists():
+        prior = json.loads(outfile.read_text())
+        keep = {r["name"]: r for r in prior.get("endpoints", []) if not r.get("skipped")}
+        if keep:
+            print(f"  resuming — keeping {', '.join(keep)}\n")
+
     def save():
         outfile.write_text(json.dumps(out, indent=2) + "\n")
 
     for spec in specs:
+        if spec["name"] in keep:
+            out["endpoints"].append(keep[spec["name"]])
+            print(f"  {spec['name']} — kept from the previous run")
+            save()
+            continue
         print(f"  {spec['name']} ...", flush=True)
         try:
             out["endpoints"].append(probe(spec, args.samples, args.deadline))
