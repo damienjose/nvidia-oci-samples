@@ -148,8 +148,8 @@ def check(spec: dict, timeout: int | None = None,
         if "401" in msg or "Unauthorized" in msg:
             r["notes"].append(
                 f"401 Unauthorized. Is {key_env} a key for {spec['base_url']}? "
-                "Keys are not portable between the public catalog and the "
-                "internal Inference Hub.")
+                "Keys are not portable between the public catalog and an "
+                "internal inference service.")
         else:
             r["notes"].append(f"cannot list models: {type(e).__name__}: {msg[:110]}")
         return r

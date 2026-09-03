@@ -5,8 +5,8 @@ Tools for the agent section of demo.ipynb.
 
 These are deterministic local functions with fixed data. Nothing here reaches
 the network -- the point of the demo is that the whole loop runs on one box.
-Swap these for your own functions (Fusion APIs, internal services, a database)
-and the agent loop is unchanged.
+Swap these for your own functions -- a SaaS API, an internal service, a
+database -- and the agent loop is unchanged.
 """
 
 from __future__ import annotations
