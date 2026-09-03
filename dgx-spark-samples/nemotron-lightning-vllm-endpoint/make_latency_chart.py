@@ -63,11 +63,31 @@ def main() -> int:
         # of the axis rather than a fraction of its own value. A local TTFT of
         # 70 ms on an axis running to 5 s would otherwise land on top of its own
         # whisker cap, which is precisely the row a reader looks at first.
-        top = max([r[key]["max"] for r in ok] + [1]) * 1.30
+        # Fall back only when there is nothing to plot. An earlier version wrote
+        # min([...] + [1]), which pinned the low end at 1 whatever the data said
+        # and forced a log scale onto the decode panel -- flattening a real 2x
+        # difference into two bars that looked alike. A chart that understates
+        # its own finding is the same failure as a number that overstates one.
+        highs = [r[key]["max"] for r in ok]
+        lows = [r[key]["min"] for r in ok]
+        hi = max(highs) if highs else 1
+        lo = min(lows) if lows else 1
+
+        # A queued endpoint can be four orders of magnitude off a local one --
+        # 58 ms against 213 seconds, observed. On a linear axis that renders as
+        # one long bar and four invisible ones, which is not a chart. Switch to
+        # log when the spread demands it and say so on the axis, because a log
+        # scale read as linear understates the difference enormously.
+        log = hi / max(lo, 1e-9) > 50
+        if log:
+            ax.set_xscale("log")
+            label += "  ·  log scale"
+        top = hi * (3.0 if log else 1.30)
         pad = top * 0.015
+        floor = max(lo * 0.5, 1e-9) if log else 0
         for i, r in enumerate(ok):
             v, c, yy = r[key], GREEN if is_local(r) else GREY, y[i]
-            ax.barh(yy, v["median"], height=0.55, color=c, zorder=2)
+            ax.barh(yy, v["median"] - floor, left=floor, height=0.55, color=c, zorder=2)
             if v["max"] > v["min"]:
                 ax.plot([v["min"], v["max"]], [yy, yy], color=INK, lw=1.4,
                         zorder=3, solid_capstyle="butt")
@@ -89,7 +109,7 @@ def main() -> int:
         ax.set_title(title, fontsize=11.5, color=INK, pad=10, loc="left")
         ax.grid(axis="x", color="#E6E8EA", zorder=0)
         ax.set_axisbelow(True)
-        ax.set_xlim(0, top)
+        ax.set_xlim(floor, top)
 
     panel(ax1, "ttft_ms", "{:.0f} ms", "Time to first token (ms) — lower is better",
           "How long before anything comes back?")
