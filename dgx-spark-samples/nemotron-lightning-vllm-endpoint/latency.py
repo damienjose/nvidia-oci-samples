@@ -64,6 +64,18 @@ PROMPT = "In one sentence, what is a GPU?"
 MAX_TOKENS = 128
 
 
+
+def _is_timeout(e: BaseException) -> bool:
+    """Did this exception mean "it did not answer in time"?
+
+    Checked by name rather than by class. httpx raises ReadTimeout, the OpenAI
+    SDK wraps it as APITimeoutError, and neither derives from the builtin
+    TimeoutError -- so `except TimeoutError` silently misses both, which is how
+    a 60s deadline turned into a six-minute wait.
+    """
+    return isinstance(e, TimeoutError) or "timeout" in type(e).__name__.lower()
+
+
 def one_request(client, model: str, extra_body: dict | None, timeout: int,
                 deadline: float = 60.0):
     """Stream one completion.
@@ -96,12 +108,12 @@ def one_request(client, model: str, extra_body: dict | None, timeout: int,
         if with_usage:
             kwargs["stream_options"] = {"include_usage": True}
         for chunk in client.chat.completions.create(**kwargs):
-            # The client's own timeout is not enough. It governs the initial
-            # response and the gap between reads, and a gateway that holds a
-            # queued request open with SSE keepalives resets that timer forever.
-            # One observed sample sat at 5.6 minutes before its first token. So
-            # enforce a wall clock here and give up, because an endpoint that
-            # queues for minutes has already answered the question being asked.
+            # Second line of defence only. This fires when chunks keep arriving
+            # but the response never ends -- a gateway sending SSE keepalives
+            # while a request is queued. It cannot help while we are still
+            # waiting for the *first* chunk, because create() blocks and this
+            # loop body has not run yet. That case is handled by giving the HTTP
+            # client a read timeout equal to the deadline, below.
             if time.perf_counter() - t0 > deadline:
                 raise TimeoutError(f"no completion within {deadline:.0f}s")
             usage = getattr(chunk, "usage", None)
@@ -123,12 +135,12 @@ def one_request(client, model: str, extra_body: dict | None, timeout: int,
 
     try:
         ttft, n_chunks, reported, total = _run(with_usage=True)
-    except TimeoutError:
-        # Must not fall through to the retry: the endpoint is queued, not
-        # fussy about stream_options, and retrying would spend a second full
+    except Exception as e:                                      # noqa: BLE001
+        # A timeout must not fall through to the retry. The endpoint is queued,
+        # not fussy about stream_options, and retrying would spend a second full
         # deadline learning the same thing.
-        raise
-    except Exception:                                           # noqa: BLE001
+        if _is_timeout(e):
+            raise
         ttft, n_chunks, reported, total = _run(with_usage=False)
 
     n = reported if reported else n_chunks
@@ -146,9 +158,17 @@ def probe(spec: dict, samples: int, deadline: float = 60.0,
     if key_env and not os.environ.get(key_env):
         return {"name": name, "skipped": f"{key_env} is not set"}
 
+    # The HTTP read timeout is what actually bounds a silently queued endpoint.
+    # create() blocks until the first byte of the response, so no amount of
+    # in-loop checking helps there; httpx raising ReadTimeout is what rescues us.
+    # One endpoint sat 5.6 minutes before its first token with the default 120s
+    # in place, which is how this was found.
+    #
+    # max_retries=0 matters just as much. The SDK retries a timed-out request
+    # twice by default, so a 60s deadline would quietly cost 180s per sample.
     client = OpenAI(base_url=spec["base_url"],
                     api_key=os.environ.get(key_env, "not-needed") if key_env else "not-needed",
-                    timeout=spec.get("timeout", 120))
+                    timeout=deadline, max_retries=0)
     model = spec["model"]
     extra = spec.get("extra_body")
 
@@ -156,17 +176,21 @@ def probe(spec: dict, samples: int, deadline: float = 60.0,
     # server pays cache and graph warmup; neither is what anyone means by
     # latency, and both land entirely on the first sample.
     try:
-        one_request(client, model, extra, spec.get("timeout", 120), deadline)
-    except TimeoutError:
-        return {"name": name,
-                "skipped": f"queued longer than {deadline:.0f}s — not measurable right now"}
+        one_request(client, model, extra, deadline, deadline)
     except Exception as e:                                      # noqa: BLE001
+        # A read timeout and our own wall clock mean the same thing here: the
+        # endpoint did not answer in the time we were willing to wait. Report it
+        # as queued rather than as a very large latency, because that is what it
+        # is -- a fact about the gateway, not a measurement of the model.
+        if _is_timeout(e):
+            return {"name": name,
+                    "skipped": f"queued longer than {deadline:.0f}s — not measurable right now"}
         return {"name": name, "skipped": f"{type(e).__name__}: {str(e)[:90]}"}
 
     ttfts, decodes, errors, exact_all = [], [], 0, True
     for i in range(samples):
         try:
-            got = one_request(client, model, extra, spec.get("timeout", 120), deadline)
+            got = one_request(client, model, extra, deadline, deadline)
         except Exception as e:                                  # noqa: BLE001
             errors += 1
             if verbose:
@@ -220,10 +244,31 @@ def main() -> int:
            "samples_requested": args.samples, "deadline_s": args.deadline,
            "endpoints": []}
 
+    # Write after every endpoint, not once at the end. A probe against shared
+    # gateways is exactly the thing you interrupt -- and losing four good
+    # measurements because the fifth was queueing is the expensive failure here,
+    # not the fifth endpoint. run_benchmark.py checkpoints for the same reason.
+    outfile = Path(args.out)
+    outfile.parent.mkdir(exist_ok=True)
+
+    def save():
+        outfile.write_text(json.dumps(out, indent=2) + "\n")
+
     for spec in specs:
         print(f"  {spec['name']} ...", flush=True)
-        out["endpoints"].append(probe(spec, args.samples, args.deadline))
+        try:
+            out["endpoints"].append(probe(spec, args.samples, args.deadline))
+        except KeyboardInterrupt:
+            print(f"\n  interrupted during {spec['name']} — keeping "
+                  f"{len(out['endpoints'])} completed endpoint(s)")
+            out["interrupted_during"] = spec["name"]
+            save()
+            break
+        save()
 
+    if not out["endpoints"]:
+        print("\n  nothing measured.")
+        return 1
     print(f"\n  {'endpoint':<18}{'TTFT median':>14}{'range':>18}{'decode':>16}")
     print("  " + "-" * 66)
     for r in out["endpoints"]:
@@ -241,8 +286,7 @@ def main() -> int:
               "    return a token count. Treat those as indicative only; a gateway that\n"
               "    batches chunks inflates this figure.")
 
-    Path(args.out).parent.mkdir(exist_ok=True)
-    Path(args.out).write_text(json.dumps(out, indent=2) + "\n")
+    save()
     print(f"\nWrote {args.out}")
     print("\n  Hosted figures are end-to-end from this machine and include network and\n"
           "  gateway queueing, which cannot be separated from model time. The pair worth\n"
