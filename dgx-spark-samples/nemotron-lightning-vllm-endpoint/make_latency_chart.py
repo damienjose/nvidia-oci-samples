@@ -72,8 +72,14 @@ def main() -> int:
                 ax.plot([v["min"], v["max"]], [yy, yy], color=INK, lw=1.4,
                         zorder=3, solid_capstyle="butt")
                 ax.plot([v["min"], v["max"]], [yy, yy], "|", color=INK, ms=7, zorder=3)
-            ax.text(max(v["max"], v["median"]) + pad, yy, fmt.format(v["median"]),
-                    va="center", fontsize=9.5, color=INK, zorder=4)
+            # A decode figure the server did not vouch for gets a tilde. It is
+            # still plotted -- hiding it would be its own distortion -- but the
+            # reader is told not to quote it.
+            approx = key == "decode_tok_s" and not r.get("decode_exact", True)
+            ax.text(max(v["max"], v["median"]) + pad, yy,
+                    ("~" if approx else "") + fmt.format(v["median"]),
+                    va="center", fontsize=9.5,
+                    color="#7A8188" if approx else INK, zorder=4)
         for j, r in enumerate(skipped):
             ax.text(0.02, y[len(ok) + j], f"skipped — {r['skipped'][:34]}",
                     va="center", fontsize=9, style="italic", color=RED,
@@ -105,7 +111,11 @@ def main() -> int:
                  f"{data.get('max_tokens','?')}, one warmup discarded. Bars are medians; "
                  f"whiskers are the full min-max range. Green = local on one DGX Spark. "
                  f"Hosted figures are end-to-end and include network and gateway queueing, "
-                 f"which cannot be separated from model time.  Run: {data.get('generated','')}",
+                 f"which cannot be separated from model time."
+                 + (" A tilde marks a decode rate inferred from stream chunks because the "
+                    "endpoint returned no token count; a gateway that batches chunks inflates it."
+                    if any(not r.get("decode_exact", True) for r in ok) else "")
+                 + f"  Run: {data.get('generated','')}",
                  fontsize=8.2, color="#7A8188")
 
     fig.tight_layout()
