@@ -150,12 +150,16 @@ $(printf '\033[1m== Setup complete\033[0m')
 
 Next -- activate the Python virtual environment this script just built, then:
 
-  source .venv/bin/activate
+  source ${VENV}/bin/activate
 
   ./serve.sh                  start the endpoint (leave running, ~4 min cold)
   jupyter lab demo.ipynb      open the walkthrough
 
-That is .venv/bin/activate -- a Python virtualenv, not a .env credentials file.
+That is the virtualenv this run created -- VENV_DIR can point it elsewhere, and
+printing the literal .venv would have sent you to a different environment than
+the one that has the dependencies in it.
+
+That is a Python virtualenv, not a .env credentials file.
 There is no .env in this sample and you should not create one: endpoints.json
 reads NVIDIA_API_KEY from the environment, so no key is ever written to disk.
 

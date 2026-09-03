@@ -64,7 +64,13 @@ No NVIDIA licence, NGC subscription, or support contract is required to run this
   (larger unpacked) vLLM container image, with headroom.
 - A Hugging Face token (`HF_TOKEN`) only if you hit download rate limits.
 
-**No OCI account, cloud GPU shape, or network egress is required.**
+**No OCI account and no cloud GPU shape are required.**
+
+The first run does need internet egress, to `docker pull` the vLLM image and fetch the weights
+from Hugging Face — roughly 31 GB in total. After both are cached on the device, serving and the
+whole local half of the notebook run with no egress at all. The hosted-model comparison in
+section 4 is the exception: it calls `integrate.api.nvidia.com` by definition, and it is the one
+part you can skip on an isolated machine.
 
 ## Connecting to Your DGX Spark
 
@@ -170,15 +176,32 @@ notebook runs on the DGX Spark itself** — the kernel and vLLM are on the same 
 Python is executing on the Spark.
 
 **The one case where you do change it:** if you run the notebook (or any other client) on your
-laptop rather than on the Spark, `localhost` points at the wrong machine. Use the device name:
+laptop rather than on the Spark, `localhost` points at the wrong machine. Open an SSH tunnel and
+keep pointing at `localhost`:
 
-```python
-BASE_URL = "http://spark-xxxx.local:8000/v1"     # your device's name
+```bash
+ssh -N -L 8000:localhost:8000 <username>@<device-name>.local
 ```
 
-The `.local` suffix is required — DGX Spark advertises over mDNS, and the bare hostname will not
-resolve. Use the IP address instead if mDNS is blocked on your network. You would also need to
-reach port 8000 from that machine, either directly or with `ssh -N -L 8000:localhost:8000`.
+```python
+BASE_URL = "http://localhost:8000/v1"     # tunnelled to the Spark
+```
+
+The tunnel is the supported route, and `serve.sh` binds the published port to `127.0.0.1` for
+that reason: **vLLM serves no authentication of any kind.** Anything that can reach the port can
+use the model, read whatever is sent through it, and occupy the GPU. Over a tunnel the traffic is
+carried inside SSH; pointed at `http://spark-xxxx.local:8000` it crosses your network in
+cleartext, open to anyone who can route to the device.
+
+If you have a specific reason to expose it on a trusted segment, opt in explicitly:
+
+```bash
+BIND_ADDR=0.0.0.0 ./serve.sh
+```
+
+and put an authenticated TLS reverse proxy in front of it. The `.local` suffix is required if you
+address the device by name — DGX Spark advertises over mDNS, and the bare hostname will not
+resolve; use the IP address if mDNS is blocked on your network.
 
 Separately, and not needed to run any of this: the `base_url` line is also how you point an
 application *you already have* at this endpoint. That is covered in section 3 of the notebook, and
@@ -275,6 +298,11 @@ vllm serve nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
   --host 0.0.0.0 --port 8000
 ```
 
+`--host 0.0.0.0` is the bind *inside the container*, which is how Docker reaches the process;
+`serve.sh` limits the exposure on the host side with `-p 127.0.0.1:8000:8000`. If you run this
+command directly on the device instead of through `serve.sh`, use `--host 127.0.0.1` — otherwise
+you are publishing an unauthenticated endpoint on every interface.
+
 | Flag | Why |
 | --- | --- |
 | `--max-model-len 65536` | 64k context. The model supports up to 1M; 64k is what was measured |
@@ -335,13 +363,12 @@ against `https://integrate.api.nvidia.com/v1` — the base URL printed on every 
 build.nvidia.com. The free tier is rate limited, which is why `endpoints.json` uses low
 concurrency; higher throughput comes with NVIDIA AI Enterprise.
 
-> **A note if you work at NVIDIA.** There is a second, internal service —
-> `inference-api.nvidia.com`, the NVIDIA Inference Hub — with a much larger catalogue and a
-> different key from `inference.nvidia.com/key-management`. It is employee-only, so this sample
-> deliberately does **not** use it: a benchmark nobody outside NVIDIA can re-run is not
-> reproducible, and reproducibility is the point. If you want to run the sweep against the Hub,
-> copy `endpoints.json`, change `base_url` and the model ids, and keep the copy local —
-> `endpoints-*.json` is gitignored for that purpose.
+> **A note if you work at NVIDIA.** Internal inference services exist with larger catalogues and
+> their own keys. This sample deliberately does **not** use them: a benchmark nobody outside
+> NVIDIA can re-run is not reproducible, and reproducibility is the point. If you want to run the
+> sweep against an internal service, copy `endpoints.json`, change `base_url` and the model ids,
+> and keep the copy local — `endpoints-*.json` is gitignored for that purpose. Note that internal
+> model ids usually carry a provider prefix the public catalog does not.
 
 The model ids in `endpoints.json` are the catalog's own, taken from each model card. They differ
 from the Hub's, which carry a provider prefix — `openai/gpt-oss-120b` here versus

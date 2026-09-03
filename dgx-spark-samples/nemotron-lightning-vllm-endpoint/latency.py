@@ -257,7 +257,7 @@ def main() -> int:
     # measurements because the fifth was queueing is the expensive failure here,
     # not the fifth endpoint. run_benchmark.py checkpoints for the same reason.
     outfile = Path(args.out)
-    outfile.parent.mkdir(exist_ok=True)
+    outfile.parent.mkdir(parents=True, exist_ok=True)
 
     # --resume keeps whatever already measured cleanly and retries only the rest.
     # A shared gateway that was queueing at one hour may not be at the next, and
@@ -266,7 +266,25 @@ def main() -> int:
     keep = {}
     if args.resume and outfile.exists():
         prior = json.loads(outfile.read_text())
-        keep = {r["name"]: r for r in prior.get("endpoints", []) if not r.get("skipped")}
+        prior_endpoints = prior.get("endpoints", [])
+        keep = {r["name"]: r for r in prior_endpoints if not r.get("skipped")}
+        # Endpoints the current selection does not cover have to be carried
+        # across explicitly, because save() rewrites the whole file. The
+        # documented way to use --resume is with --only, to give one queued
+        # endpoint a longer deadline:
+        #
+        #     ./latency.py --resume --only gemma-4-31b --deadline 300
+        #
+        # With --only, `specs` holds one endpoint, so without this the file is
+        # rewritten containing that endpoint alone and the four healthy
+        # measurements the flag exists to preserve are deleted -- by the run
+        # that was meant to protect them.
+        selected = {s["name"] for s in specs}
+        carried = [r for r in prior_endpoints if r["name"] not in selected]
+        out["endpoints"].extend(carried)
+        if carried:
+            print(f"  resuming — carrying {', '.join(r['name'] for r in carried)} "
+                  f"from the previous run")
         if keep:
             print(f"  resuming — keeping {', '.join(keep)}\n")
 

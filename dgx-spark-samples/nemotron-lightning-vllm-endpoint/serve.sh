@@ -19,6 +19,23 @@ set -euo pipefail
 
 MODEL="${MODEL:-nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4}"
 PORT="${PORT:-8000}"
+# Which host interface the published port is bound to. Loopback by default:
+# vLLM serves no authentication of any kind, so publishing on every interface
+# puts an open completions endpoint -- and the GPU behind it -- on whatever
+# network the Spark is attached to. The notebook runs on the device itself, so
+# the default costs it nothing.
+#
+# To reach the endpoint from a laptop, prefer the SSH tunnel documented in
+# README.md:
+#
+#     ssh -N -L 8000:localhost:8000 <user>@<device>.local
+#
+# If you genuinely need it on the network -- a trusted lab segment, say -- opt
+# in explicitly and understand that anyone who can route to this host can use
+# the model:
+#
+#     BIND_ADDR=0.0.0.0 ./serve.sh
+BIND_ADDR="${BIND_ADDR:-127.0.0.1}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-65536}"
 CONTAINER_NAME="${CONTAINER_NAME:-vllm-nemotron}"
 # v0.27.1 is the release that carries day-0 Nemotron 3.5 Lightning support, and
@@ -192,6 +209,11 @@ fi
 
 echo "Model:        $MODEL"
 echo "Port:         $PORT"
+if [[ "$BIND_ADDR" == "127.0.0.1" || "$BIND_ADDR" == "localhost" ]]; then
+  echo "Bind:         $BIND_ADDR (device-local only; use an SSH tunnel from a laptop)"
+else
+  echo "Bind:         $BIND_ADDR  ** reachable from the network, and vLLM has no auth **"
+fi
 echo "Context:      $MAX_MODEL_LEN"
 echo "HF cache:     $HF_CACHE"
 echo "vLLM cache:   $VLLM_CACHE"
@@ -248,7 +270,12 @@ if [[ -n "${TUNED:-}" ]]; then
   echo "         Results are not comparable to a default-profile run."
   echo
   SERVE_FLAGS+=(
-    --trust-remote-code
+    # --trust-remote-code is deliberately NOT here. The supported checkpoint
+    # ships no `auto_map`, so it needs no custom code path, and the flag would
+    # let a different or re-tagged model execute repository Python inside the
+    # container -- which holds HF_TOKEN and a writable cache mount. If you
+    # point MODEL at a checkpoint that genuinely requires it, add it yourself
+    # and pin the revision you reviewed.
     --moe-backend marlin
     --kv-cache-dtype fp8
     --mamba-backend flashinfer
@@ -285,7 +312,7 @@ exec docker run $DETACH_FLAG --rm \
   --name "$CONTAINER_NAME" \
   --gpus all \
   --ipc=host \
-  -p "${PORT}:8000" \
+  -p "${BIND_ADDR}:${PORT}:8000" \
   -v "${HF_CACHE}:/root/.cache/huggingface" \
   -v "${VLLM_CACHE}:/root/.cache/vllm" \
   -e HF_TOKEN="${HF_TOKEN:-}" \
@@ -295,3 +322,8 @@ exec docker run $DETACH_FLAG --rm \
     "${SERVE_FLAGS[@]}" \
     --host 0.0.0.0 \
     --port 8000
+# --host 0.0.0.0 here is the bind *inside* the container, and it has to stay:
+# Docker reaches the process over the container's own network interface, so
+# binding it to 127.0.0.1 would make the published port unreachable and look
+# like a dead server. What limits exposure is -p "${BIND_ADDR}:...", which is
+# the host side of the mapping.

@@ -356,7 +356,7 @@ class Record:
         return self.decision_correct and (self.called or self.has_text)
 
 
-def observe(message: Any, finish_reason: str | None = None) -> Record | None:
+def observe(message: Any, finish_reason: str | None = None) -> Record:
     """Turn one chat completion message into a Record. Label is attached by
     the caller; this only reads what the server returned."""
     tool_calls = getattr(message, "tool_calls", None) or []
@@ -419,9 +419,22 @@ def holm_pairwise(models: list[dict], metric: str, alpha: float = 0.05) -> list[
                           "p": two_proportion_p(ka, na, kb, nb)})
     pairs.sort(key=lambda x: x["p"])
     m = len(pairs)
+    # Holm is a step-down procedure, and the stepping down is the whole point.
+    # Walk the pairs in ascending p and stop at the first one that fails its
+    # threshold: everything after it is non-significant regardless of its own
+    # threshold. Testing each pair independently against alpha/(m-i) is not
+    # Holm -- the thresholds grow as you descend, so a later pair with a larger
+    # p can clear a larger threshold and be called significant after an earlier,
+    # stronger comparison has already failed. That inflates the family-wise
+    # error rate this correction exists to control.
+    still_rejecting = True
     for i, pair in enumerate(pairs):
         pair["threshold"] = alpha / (m - i)
-        pair["significant"] = pair["p"] < pair["threshold"]
+        if still_rejecting and pair["p"] < pair["threshold"]:
+            pair["significant"] = True
+        else:
+            still_rejecting = False
+            pair["significant"] = False
     return pairs
 
 

@@ -184,26 +184,49 @@ def run_endpoint(spec: dict, examples: list[dict], max_tokens: int,
     attempts = spec.get("max_attempts", 8)
 
     def one(ex):
-        msg, finish, err = call_with_backoff(
-            client, model=spec["model"], messages=w2c.build_messages(ex),
-            tools=w2c.to_openai_tools(ex["tools"]), max_tokens=budget,
-            extra_body=extra, timeout=per_req_timeout,
-            max_attempts=attempts)
-        if err:
+        # Everything here, not just the API call. build_messages, the tool
+        # conversion and observe() all run per example and can raise on one
+        # malformed record; uncaught, that exception surfaces at fut.result()
+        # and takes down the whole endpoint, discarding every example that had
+        # already completed and leaving no trace in `failed` either. One bad
+        # example is worth one error row, not a lost run.
+        try:
+            msg, finish, err = call_with_backoff(
+                client, model=spec["model"], messages=w2c.build_messages(ex),
+                tools=w2c.to_openai_tools(ex["tools"]), max_tokens=budget,
+                extra_body=extra, timeout=per_req_timeout,
+                max_attempts=attempts)
+            if err:
+                return w2c.Record(label=ex["label"], called=False, tool_name=None,
+                                  gold_tool=ex.get("gold_tool"), has_text=False,
+                                  finish_reason=None, error=err)
+            rec = w2c.observe(msg, finish)
+            rec.label = ex["label"]
+            rec.gold_tool = ex.get("gold_tool")
+            return rec
+        except Exception as exc:  # noqa: BLE001 - recorded, never swallowed
             return w2c.Record(label=ex["label"], called=False, tool_name=None,
                               gold_tool=ex.get("gold_tool"), has_text=False,
-                              finish_reason=None, error=err)
-        rec = w2c.observe(msg, finish)
-        rec.label = ex["label"]
-        rec.gold_tool = ex.get("gold_tool")
-        return rec
+                              finish_reason=None,
+                              error=f"{type(exc).__name__}: {exc}")
 
     t0 = time.perf_counter()
     records: list[w2c.Record] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(one, ex): ex for ex in examples}
         for i, fut in enumerate(as_completed(futures), 1):
-            records.append(fut.result())
+            # `one` catches its own failures, so this is the last resort: a
+            # worker killed by something outside it still costs one record
+            # rather than the endpoint.
+            try:
+                records.append(fut.result())
+            except Exception as exc:  # noqa: BLE001 - recorded, never swallowed
+                ex = futures[fut]
+                records.append(w2c.Record(
+                    label=ex["label"], called=False, tool_name=None,
+                    gold_tool=ex.get("gold_tool"), has_text=False,
+                    finish_reason=None,
+                    error=f"worker failed: {type(exc).__name__}: {exc}"))
             if verbose and i % 10 == 0:
                 print(f"    {name}: {i}/{len(examples)}", flush=True)
     elapsed = time.perf_counter() - t0
@@ -251,7 +274,11 @@ def sweep(config=None, n_per_label=40, only=None, concurrency=None,
     if verbose:
         print(f"  {len(examples)} examples\n")
 
-    RESULTS.mkdir(exist_ok=True)
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    # `--out` may point anywhere, including a directory that does not exist yet.
+    # Creating it here rather than at write time means checkpoint() cannot lose
+    # a completed endpoint to a missing parent after the requests are spent.
+    out.parent.mkdir(parents=True, exist_ok=True)
     # `max_tokens_default` is the CLI fallback, not what anything actually ran
     # at -- endpoints.json overrides it per endpoint, and the budget each model
     # was really given is recorded on that model's own entry. Naming this field

@@ -25,6 +25,35 @@ HERE = Path(__file__).parent
 GREEN, GREY, RED, INK = "#76B900", "#B9BEC4", "#C4453B", "#141618"
 
 
+def _short_reason(entry: dict) -> str:
+    """A chart-width summary of why an endpoint produced no data.
+
+    `sweep` writes a full sentence into `reason`; a bar label has room for a
+    few words. Classify the common causes and fall back to a truncation rather
+    than to a guess, because the wrong guess here -- "rate limited" for every
+    failure -- makes a claim about a third-party service that the run did not
+    observe.
+    """
+    reason = (entry.get("reason") or "").strip()
+    if not reason:
+        return "not run"
+    low = reason.lower()
+    if "api_key" in low or "api key" in low or "not set" in low:
+        return "no API key"
+    # Before the cause-specific checks: sweep's "all N requests failed" message
+    # quotes the first error, so matching on "timeout" first would relabel a
+    # wholesale failure as a timeout on the strength of one example.
+    if "all " in low and "failed" in low:
+        return "all requests failed"
+    if "429" in low or "rate" in low or "quota" in low:
+        return "rate limited"
+    if "model" in low and ("not found" in low or "unknown" in low or "404" in low):
+        return "model not found"
+    if "timeout" in low or "timed out" in low or "queued" in low:
+        return "timed out"
+    return reason if len(reason) <= 34 else reason[:31].rstrip() + "..."
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--summary", default=str(HERE / "results" / "summary.json"))
@@ -71,7 +100,12 @@ def main() -> int:
                  va="center", fontsize=9.5, color=INK, zorder=4)
     for j, f in enumerate(failed):
         yy = y[len(models) + j]
-        ax1.text(2, yy, "no data — rate limited", va="center", fontsize=9.5,
+        # Say why it actually failed. `sweep` records a reason -- a missing API
+        # key, an unresolved model id, every request failing -- and hardcoding
+        # "rate limited" charted a model skipped for a missing credential as a
+        # throttled one. That is a claim about someone else's service that the
+        # data does not support.
+        ax1.text(2, yy, f"no data — {_short_reason(f)}", va="center", fontsize=9.5,
                  style="italic", color=RED)
 
     ax1.set_yticks(y); ax1.set_yticklabels(names, fontsize=10)
@@ -109,16 +143,28 @@ def main() -> int:
         ax.spines["bottom"].set_color("#D8DBDE")
         ax.tick_params(length=0)
 
-    n = data.get("n_examples", "?")
+    # `n_examples` is what the sweep asked for; a model that errored on some
+    # examples is scored on fewer, and its Wilson interval is computed from
+    # that smaller n. Report what was actually scored, and say so as a range
+    # when the endpoints disagree -- the caption should not claim a sample size
+    # no model was measured at.
+    scored = sorted({m.get("n_scored") for m in models if m.get("n_scored")})
+    if not scored:
+        n_text = f"{data.get('n_examples', '?')} examples requested per model"
+    elif len(scored) == 1:
+        n_text = f"{scored[0]} examples scored per model"
+    else:
+        n_text = (f"{scored[0]}–{scored[-1]} examples scored per model "
+                  f"({data.get('n_examples', '?')} requested)")
     if not args.compact:
         fig.text(0.008, -0.02,
-                 f"nvidia/When2Call, {n} examples per model, identical prompts and tool "
+                 f"nvidia/When2Call, {n_text}, identical prompts and tool "
                  f"schemas. Error bars are 95% Wilson intervals. Green = running locally "
                  f"on one DGX Spark.  Run: {data.get('generated','')}",
                  fontsize=8.2, color="#7A8188")
 
     fig.tight_layout()
-    Path(args.out).parent.mkdir(exist_ok=True)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, bbox_inches="tight", facecolor="white")
     print(f"wrote {args.out}")
     return 0
